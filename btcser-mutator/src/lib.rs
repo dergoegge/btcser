@@ -38,7 +38,7 @@ pub trait ByteArrayMutator {
 }
 
 pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
-    byte_array_mutator: B,
+    pub byte_array_mutator: B,
 }
 
 impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueMutator<B> {
