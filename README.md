@@ -20,6 +20,23 @@ Using Bitcoin's serialization format, this type would always be represented as
 17 bytes. The first byte represent the `u8` field, the next 8 bytes represent
 the `u64` field, and the last 8 bytes represent the `bytes<8>` field.
 
+The equivalent C++ type would look as follows (using Bitcoin Core's
+serialization framework):
+
+```c++
+struct Foo {
+public:
+    uint8_t field0;
+    uint64_t field1;
+    std::array<uint8_t, 8> field2;
+
+    SERIALIZE_METHODS(Foo, obj)
+    {
+        READWRITE(obj.field0, obj.field1, obj.field2);
+    }
+};
+```
+
 ## Built-in Types
 Besides the three basic types used above, btcser also supports the following
 build-in types:
