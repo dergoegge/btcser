@@ -1,0 +1,40 @@
+# Transaction primitives
+
+prevout { 
+    u256, # prevout hash
+    u32   # prevout index
+}
+
+script { vec<u8> }
+tx_out { i64, script }
+tx_in { prevout, script, u32 }
+
+wit_stack { vec<vec<u8>> }
+
+tx_no_wit { u32,vec<tx_in>,vec<tx_out>,u32 }
+
+tx_allow_wit {
+    u32,                   # version
+    bytes<2>(0x0001),      # segwit marker (0 non-witness vins, flag = 1)
+    vec<tx_in>,            # inputs
+    vec<tx_out>,           # outputs
+    slice<wit_stack, '2'>, # witness stack
+    u32                    # locktime
+}
+tx_allow_wit { u32,bytes<2>(0x0000),u32 } # alternative with segwit marker 0x0000
+tx_allow_wit { tx_no_wit }                # non-segwit fallback if there is no segwit marker
+
+# Block primitives
+
+header { 
+    i32,  # version
+    u256, # prev block hash
+    u256, # merkle root
+    u32,  # timestamp
+    u32,  # bits
+    u32,  # nonce
+}
+
+block { header, vec<tx_allow_wit> }     # block with segwit transactions
+block_no_wit { header, vec<tx_no_wit> } # block with non-segwit transactions
+empty_block { header, u8(0x00) }           # empty block

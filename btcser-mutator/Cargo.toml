@@ -1,0 +1,13 @@
+[package]
+name = "btcser-mutator"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+rand = "0.8.5"
+hex = "0.4"
+btcser = { path = "../btcser" }
+
+[[bin]]
+name = "mutator"
+path = "src/bin/mutator.rs"

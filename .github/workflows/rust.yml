@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-and-test:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust Cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build all crates
+        run: cargo build --workspace --verbose
+
+      - name: Run tests for all crates
+        run: cargo test --workspace --verbose
+
+      - name: Run tests for all crates (release)
+        run: cargo test --workspace --release --verbose
+
+      - name: Check formatting for all crates
+        run: cargo fmt --all --check

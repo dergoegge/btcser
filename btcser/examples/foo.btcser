@@ -1,0 +1,3 @@
+fizz { u8, u64, bytes<8> }
+bar { u8, slice<fizz, '0'> }
+foo { vec<vec<fizz>> }

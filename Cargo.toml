@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "btcser",
+    "btcser-mutator"
+] 
