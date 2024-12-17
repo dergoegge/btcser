@@ -118,6 +118,11 @@ public:
   }
   ~Mutator() { btcser_mutator_free(m_mutator); }
 
+  Mutator(Mutator &&) = default;
+  Mutator &operator=(Mutator &&) = default;
+  Mutator(const Mutator &other) = delete;
+  Mutator &operator=(const Mutator &other) = delete;
+
   MutatedBuffer mutate(const uint8_t *data, uint32_t data_len, uint64_t seed) {
     MutatedBuffer out;
     assert(m_mutator);
