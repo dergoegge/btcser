@@ -193,14 +193,13 @@ impl DescriptorParser {
 
     fn parse_field(&self, tokens: &[Token], start: usize) -> Result<(Field, usize), String> {
         let mut pos = start;
-        // Get field type identifier
         let type_name = match tokens.get(pos) {
             Some(Token::Identifier(name)) => name.clone(),
             _ => return Err(self.err("Expected type identifier".to_string())),
         };
         pos += 1;
 
-        // Parse the type (including any angle brackets for generics)
+        // Parse the type first
         let field_type = self.parse_type(&type_name, tokens, &mut pos)?;
 
         // Check for constant value
@@ -209,7 +208,9 @@ impl DescriptorParser {
             pos += 1;
             match tokens.get(pos) {
                 Some(Token::HexConstant(value)) => {
-                    constant_value = Some(value.clone());
+                    // Validate and potentially pad the constant value
+                    let padded_value = self.validate_and_pad_constant(&field_type, value)?;
+                    constant_value = Some(padded_value);
                     pos += 1;
                 }
                 _ => return Err(self.err("Expected hex constant".to_string())),
@@ -390,6 +391,58 @@ impl DescriptorParser {
 
     pub fn get_descriptor(&self, name: &str) -> Option<&Descriptor> {
         self.descriptors.get(name)
+    }
+
+    fn validate_and_pad_constant(
+        &self,
+        field_type: &FieldType,
+        value: &[u8],
+    ) -> Result<Vec<u8>, String> {
+        match field_type {
+            FieldType::Bool => {
+                if value.len() != 1 || (value[0] != 0 && value[0] != 1) {
+                    return Err(self.err("Boolean constant must be 0x00 or 0x01".to_string()));
+                }
+                Ok(value.to_vec())
+            }
+            FieldType::Int(int_type) => {
+                let expected_size = match int_type {
+                    IntType::U8 | IntType::I8 => 1,
+                    IntType::U16 | IntType::U16BE | IntType::I16 | IntType::I16BE => 2,
+                    IntType::U32 | IntType::U32BE | IntType::I32 | IntType::I32BE => 4,
+                    IntType::U64 | IntType::U64BE | IntType::I64 | IntType::I64BE => 8,
+                    IntType::U256 | IntType::U256BE | IntType::I256 | IntType::I256BE => 32,
+                    IntType::CompactSize(_) | IntType::VarInt | IntType::VarIntNonNegative => {
+                        return Err(
+                            self.err("Variable-length types cannot have constants".to_string())
+                        );
+                    }
+                };
+                if value.len() != expected_size {
+                    return Err(self.err(format!(
+                        "Constant value size mismatch: expected {} bytes, got {}",
+                        expected_size,
+                        value.len()
+                    )));
+                }
+                Ok(value.to_vec())
+            }
+            FieldType::Bytes(size) => {
+                if value.len() > *size {
+                    return Err(self.err(format!(
+                        "Constant value too large: got {} bytes, maximum is {}",
+                        value.len(),
+                        size
+                    )));
+                }
+                // Pad with zeros to reach the expected size
+                let mut padded = value.to_vec();
+                padded.resize(*size, 0);
+                Ok(padded)
+            }
+            FieldType::Vec(_) | FieldType::Slice(_, _) | FieldType::Struct(_) => Err(self
+                .err("Constants are not allowed for variable-length or complex types".to_string())),
+        }
     }
 }
 
@@ -672,5 +725,37 @@ mod tests {
         ));
 
         Ok(())
+    }
+
+    #[test]
+    fn test_constant_value_validation() {
+        // Test byte padding
+        let msg = parse_single_message("Test { bytes<4>(0x0102) }").unwrap();
+        assert_eq!(
+            msg.fields[0].constant_value,
+            Some(vec![0x01, 0x02, 0x00, 0x00])
+        );
+
+        // Test full-size bytes
+        let msg = parse_single_message("Test { bytes<2>(0x0102) }").unwrap();
+        assert_eq!(msg.fields[0].constant_value, Some(vec![0x01, 0x02]));
+
+        // Test empty bytes (all zeros)
+        let msg = parse_single_message("Test { bytes<3>(0x) }").unwrap();
+        assert_eq!(msg.fields[0].constant_value, Some(vec![0x00, 0x00, 0x00]));
+
+        // Other validation tests...
+        assert!(parse_single_message("Test { u8(0xff) }").is_ok());
+        assert!(parse_single_message("Test { u16(0xffff) }").is_ok());
+        assert!(parse_single_message("Test { bool(0x01) }").is_ok());
+        assert!(parse_single_message("Test { bool(0x00) }").is_ok());
+
+        // Invalid cases
+        assert!(parse_single_message("Test { u8(0xffff) }").is_err()); // Too large
+        assert!(parse_single_message("Test { u16(0xff) }").is_err()); // Too small
+        assert!(parse_single_message("Test { bytes<2>(0xffffff) }").is_err()); // Too large
+        assert!(parse_single_message("Test { vec<u8>(0xff) }").is_err()); // No constants for vec
+        assert!(parse_single_message("Test { bool(0xff) }").is_err()); // Invalid boolean
+        assert!(parse_single_message("Test { varint(0xff) }").is_err()); // No constants for varint
     }
 }
