@@ -89,5 +89,13 @@ fuzz_target!(|data: &[u8]| {
         let _ = obj_parser
             .parse(&mutated_bytes)
             .expect("Mutated value should be parseable");
+
+        // Test crossover with the original and mutated data
+        if let Ok(crossover_bytes) = mutator.cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(&data, &mutated_bytes, 0) {
+            // Verify that the crossover result is also parseable
+            let _ = obj_parser
+                .parse(&crossover_bytes)
+                .expect("Crossover value should be parseable");
+        }
     }
 });
