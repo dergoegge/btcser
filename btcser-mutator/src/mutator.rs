@@ -190,7 +190,11 @@ pub trait SerializedValueMutator<'a> {
                 let mut bytes = Vec::new();
                 if let Some(descriptor) = parser.get_descriptor(name) {
                     for field in &descriptor.fields {
-                        bytes.extend(self.generate(&field.field_type, parser)?);
+                        if let Some(constant_value) = &field.constant_value {
+                            bytes.extend(constant_value.clone());
+                        } else {
+                            bytes.extend(self.generate(&field.field_type, parser)?);
+                        }
                     }
                     Ok(bytes)
                 } else {
@@ -924,8 +928,18 @@ impl<'p> Mutator<'p> {
         let mutator = M::new(seed);
         let obj_parser = ObjectParser::new(self.descriptor.clone(), self.parser);
 
-        // Attempt parsing the blob according to `self.descriptor`
-        let values = obj_parser.parse(data)?;
+        // Try parsing the blob according to `self.descriptor`
+        let values = match obj_parser.parse(data) {
+            Ok(v) => v,
+            Err(_) => {
+                // If parsing fails, generate a dummy value using the descriptor
+                return mutator.generate(
+                    &FieldType::Struct(self.descriptor.name.clone()),
+                    self.parser,
+                );
+            }
+        };
+
         // Given the parsed object, sample all possible mutations and pick one!
         self.sample_mutations(&values, &mut sampler, vec![], false); // no cross-over
         let mutation = sampler
