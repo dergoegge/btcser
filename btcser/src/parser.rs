@@ -1,3 +1,4 @@
+use crate::lexer::{Lexer, Token};
 use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
@@ -76,7 +77,6 @@ pub struct Descriptor {
 
 pub struct DescriptorParser {
     pub descriptors: HashMap<String, Descriptor>,
-    current_definition: Option<(String, String)>,
     current_line: usize,
 }
 
@@ -84,7 +84,6 @@ impl DescriptorParser {
     pub fn new() -> Self {
         Self {
             descriptors: HashMap::new(),
-            current_definition: None,
             current_line: 0,
         }
     }
@@ -93,318 +92,299 @@ impl DescriptorParser {
         format!("Line {}: {}", self.current_line, msg)
     }
 
-    fn parse_line(&mut self, line: &str) -> Result<(), String> {
-        self.current_line += 1;
+    pub fn parse_file(&mut self, content: &str) -> Result<(), String> {
+        let mut lexer = Lexer::new(content);
+        let mut tokens = Vec::new();
 
-        // Skip comments and empty lines
-        let line = if let Some(comment_pos) = line.find('#') {
-            line[..comment_pos].trim()
-        } else {
-            line.trim()
-        };
-
-        if line.is_empty() {
-            return Ok(());
-        }
-
-        // Check if we're in the middle of a multi-line definition
-        if let Some((name, partial_fields)) = &self.current_definition {
-            if line.ends_with('}') {
-                // Complete the definition
-                let complete_fields = format!("{}{}", partial_fields, line.trim_end_matches('}'));
-                let descriptor = self.parse_fields(name.clone(), &complete_fields)?;
-                if let Some(existing) = self.descriptors.get_mut(name) {
-                    existing.alternatives.push(descriptor);
-                } else {
-                    self.descriptors.insert(name.to_string(), descriptor);
-                }
-                self.current_definition = None;
-                return Ok(());
-            } else {
-                // Continue collecting fields
-                self.current_definition =
-                    Some((name.clone(), format!("{}{}", partial_fields, line)));
-                return Ok(());
+        // Collect all tokens first
+        while let Some(token) = lexer.next_token()? {
+            match token {
+                Token::Comment(_) => continue, // Skip comments
+                _ => tokens.push(token),
             }
         }
 
-        // Start of a new definition
-        let parts: Vec<&str> = line.split('{').collect();
-        if parts.len() != 2 {
-            return Err(self.err(format!("Invalid line format: {}", line)));
+        let mut position = 0;
+        while position < tokens.len() {
+            self.current_line = lexer.line();
+            position = self.parse_descriptor(&tokens, position)?;
         }
 
-        let name = parts[0].trim().to_string();
-        let fields_str = parts[1];
+        Ok(())
+    }
 
-        if !fields_str.ends_with('}') {
-            // Start of multi-line definition
-            self.current_definition = Some((name, fields_str.to_string()));
-            return Ok(());
+    fn parse_descriptor(&mut self, tokens: &[Token], start: usize) -> Result<usize, String> {
+        let mut pos = start;
+
+        // Expect identifier (struct name)
+        let name = match tokens.get(pos) {
+            Some(Token::Identifier(name)) => name.clone(),
+            _ => return Err(self.err("Expected struct name".to_string())),
+        };
+        pos += 1;
+
+        // Expect opening brace
+        match tokens.get(pos) {
+            Some(Token::OpenBrace) => pos += 1,
+            _ => return Err(self.err("Expected '{'".to_string())),
         }
 
-        let fields_str = fields_str.trim_end_matches('}');
-        let descriptor = self.parse_fields(name.clone(), fields_str)?;
+        let (fields, new_pos) = self.parse_fields(tokens, pos)?;
+        pos = new_pos;
+
+        // Expect closing brace
+        match tokens.get(pos) {
+            Some(Token::CloseBrace) => pos += 1,
+            _ => return Err(self.err("Expected '}'".to_string())),
+        }
+
+        let descriptor = Descriptor {
+            name: name.clone(),
+            fields,
+            alternatives: Vec::new(),
+        };
+
+        // Handle alternatives
         if let Some(existing) = self.descriptors.get_mut(&name) {
             existing.alternatives.push(descriptor);
         } else {
             self.descriptors.insert(name, descriptor);
         }
 
-        Ok(())
+        Ok(pos)
     }
 
-    pub fn parse_file(&mut self, content: &str) -> Result<(), String> {
-        self.current_line = 0;
-        for line in content.lines() {
-            self.parse_line(line)?;
-        }
-
-        if self.current_definition.is_some() {
-            return Err(format!(
-                "Line {}: Unclosed definition at end of file",
-                self.current_line
-            ));
-        }
-
-        Ok(())
-    }
-
-    fn parse_fields(&self, name: String, fields_str: &str) -> Result<Descriptor, String> {
+    fn parse_fields(&self, tokens: &[Token], start: usize) -> Result<(Vec<Field>, usize), String> {
+        let mut pos = start;
         let mut fields = Vec::new();
-        let mut current_field = String::new();
-        let mut depth = 0;
 
-        // Parse all fields first
-        for c in fields_str.chars() {
-            match c {
-                '<' => {
-                    depth += 1;
-                    current_field.push(c);
+        while pos < tokens.len() {
+            match tokens.get(pos) {
+                Some(Token::CloseBrace) => break,
+                Some(Token::Comma) => {
+                    pos += 1;
+                    continue;
                 }
-                '>' => {
-                    depth -= 1;
-                    current_field.push(c);
+                Some(Token::Identifier(_)) => {
+                    let (field, new_pos) = self.parse_field(tokens, pos)?;
+                    fields.push(field);
+                    pos = new_pos;
                 }
-                ',' if depth == 0 => {
-                    if !current_field.trim().is_empty() {
-                        let field = self
-                            .parse_field(current_field.trim())
-                            .map_err(|e| self.err(e))?;
-                        fields.push(field);
-                        current_field.clear();
-                    }
-                }
-                _ => {
-                    current_field.push(c);
-                }
+                err => return Err(self.err(format!("Expected field definition ({:?})", err))),
             }
-        }
-
-        // Don't forget the last field
-        if !current_field.trim().is_empty() {
-            let field = self
-                .parse_field(current_field.trim())
-                .map_err(|e| self.err(e))?;
-            fields.push(field);
         }
 
         // Process length field relationships
         for i in 0..fields.len() {
-            match &fields[i].field_type {
-                FieldType::Slice(_, length_idx) => {
-                    let idx = *length_idx as usize;
-                    if idx >= i {
-                        return Err(self.err(format!(
-                            "Slice reference '{}' points to non-existent field",
-                            length_idx
-                        )));
-                    }
-                    // Mark the referenced field as a length field
-                    fields[idx].length_field_for = Some(i as u64);
+            if let FieldType::Slice(_, length_idx) = &fields[i].field_type {
+                let idx = *length_idx as usize;
+                if idx >= i {
+                    return Err(self.err(format!(
+                        "Slice reference '{}' points to non-existent field",
+                        length_idx
+                    )));
                 }
-                _ => {}
+                fields[idx].length_field_for = Some(i as u64);
             }
         }
 
-        Ok(Descriptor {
-            name,
-            fields,
-            alternatives: Vec::new(),
-        })
+        Ok((fields, pos))
     }
 
-    fn parse_field(&self, field_str: &str) -> Result<Field, String> {
-        if field_str.is_empty() {
-            return Err("Empty field string".to_string());
-        }
+    fn parse_field(&self, tokens: &[Token], start: usize) -> Result<(Field, usize), String> {
+        let mut pos = start;
+        // Get field type identifier
+        let type_name = match tokens.get(pos) {
+            Some(Token::Identifier(name)) => name.clone(),
+            _ => return Err(self.err("Expected type identifier".to_string())),
+        };
+        pos += 1;
 
-        let name = field_str.trim().to_string();
-        let (field_type, constant_value) = self.parse_type(field_str.trim())?;
+        // Parse the type (including any angle brackets for generics)
+        let field_type = self.parse_type(&type_name, tokens, &mut pos)?;
 
-        Ok(Field {
-            name,
-            field_type,
-            constant_value,
-            length_field_for: None,
-        })
-    }
-
-    fn parse_type(&self, type_str: &str) -> Result<(FieldType, Option<Vec<u8>>), String> {
-        if type_str.is_empty() {
-            return Err("Empty type string".to_string());
-        }
-
-        // Check for constant value notation: type(0x...)
-        if let Some(paren_idx) = type_str.find('(') {
-            let base_type = &type_str[..paren_idx];
-            let value_str = type_str[paren_idx + 1..].trim_end_matches(')');
-
-            // Verify hex format and parse the constant value
-            if !value_str.starts_with("0x") {
-                return Err(format!(
-                    "Constant value must be in hex format (0x...): {}",
-                    value_str
-                ));
+        // Check for constant value
+        let mut constant_value = None;
+        if let Some(Token::OpenParen) = tokens.get(pos) {
+            pos += 1;
+            match tokens.get(pos) {
+                Some(Token::HexConstant(value)) => {
+                    constant_value = Some(value.clone());
+                    pos += 1;
+                }
+                _ => return Err(self.err("Expected hex constant".to_string())),
             }
-
-            let hex_str = &value_str[2..];
-            let value = hex_str
-                .as_bytes()
-                .chunks(2)
-                .map(|chunk| {
-                    let hex_byte = std::str::from_utf8(chunk)
-                        .map_err(|_| format!("Invalid hex string: {}", hex_str))?;
-                    u8::from_str_radix(hex_byte, 16)
-                        .map_err(|_| format!("Invalid hex value: {}", hex_byte))
-                })
-                .collect::<Result<Vec<u8>, String>>()?;
-
-            return Ok((self.parse_base_type(base_type)?, Some(value)));
+            match tokens.get(pos) {
+                Some(Token::CloseParen) => pos += 1,
+                _ => return Err(self.err("Expected ')'".to_string())),
+            }
         }
 
-        // Parse regular types without constant values
-        Ok((self.parse_base_type(type_str)?, None))
+        Ok((
+            Field {
+                name: type_name,
+                field_type,
+                constant_value,
+                length_field_for: None,
+            },
+            pos,
+        ))
     }
 
-    fn parse_base_type(&self, type_str: &str) -> Result<FieldType, String> {
-        // First handle primitive types
-        let primitive_type = match type_str {
-            "bool" => Some(FieldType::Bool),
-            "u8" => Some(FieldType::Int(IntType::U8)),
-            "i8" => Some(FieldType::Int(IntType::I8)),
-            "u16" => Some(FieldType::Int(IntType::U16)),
-            "u32" => Some(FieldType::Int(IntType::U32)),
-            "u64" => Some(FieldType::Int(IntType::U64)),
-            "u256" => Some(FieldType::Int(IntType::U256)),
-            "i16" => Some(FieldType::Int(IntType::I16)),
-            "i32" => Some(FieldType::Int(IntType::I32)),
-            "i64" => Some(FieldType::Int(IntType::I64)),
-            "i256" => Some(FieldType::Int(IntType::I256)),
-            "U16" => Some(FieldType::Int(IntType::U16BE)),
-            "U32" => Some(FieldType::Int(IntType::U32BE)),
-            "U64" => Some(FieldType::Int(IntType::U64BE)),
-            "U256" => Some(FieldType::Int(IntType::U256BE)),
-            "I16" => Some(FieldType::Int(IntType::I16BE)),
-            "I32" => Some(FieldType::Int(IntType::I32BE)),
-            "I64" => Some(FieldType::Int(IntType::I64BE)),
-            "I256" => Some(FieldType::Int(IntType::I256BE)),
-            "cs64" => Some(FieldType::Int(IntType::CompactSize(true))),
-            "varint" => Some(FieldType::Int(IntType::VarInt)),
-            "varint+" => Some(FieldType::Int(IntType::VarIntNonNegative)),
-            _ => None,
+    fn parse_type(
+        &self,
+        base_type: &str,
+        tokens: &[Token],
+        pos: &mut usize,
+    ) -> Result<FieldType, String> {
+        println!("{} {:?} {}", base_type, tokens, pos);
+        match base_type {
+            "bool" => Ok(FieldType::Bool),
+            "u8" => Ok(FieldType::Int(IntType::U8)),
+            "i8" => Ok(FieldType::Int(IntType::I8)),
+            "u16" => Ok(FieldType::Int(IntType::U16)),
+            "u32" => Ok(FieldType::Int(IntType::U32)),
+            "u64" => Ok(FieldType::Int(IntType::U64)),
+            "u256" => Ok(FieldType::Int(IntType::U256)),
+            "i16" => Ok(FieldType::Int(IntType::I16)),
+            "i32" => Ok(FieldType::Int(IntType::I32)),
+            "i64" => Ok(FieldType::Int(IntType::I64)),
+            "i256" => Ok(FieldType::Int(IntType::I256)),
+            "U16" => Ok(FieldType::Int(IntType::U16BE)),
+            "U32" => Ok(FieldType::Int(IntType::U32BE)),
+            "U64" => Ok(FieldType::Int(IntType::U64BE)),
+            "U256" => Ok(FieldType::Int(IntType::U256BE)),
+            "I16" => Ok(FieldType::Int(IntType::I16BE)),
+            "I32" => Ok(FieldType::Int(IntType::I32BE)),
+            "I64" => Ok(FieldType::Int(IntType::I64BE)),
+            "I256" => Ok(FieldType::Int(IntType::I256BE)),
+            "cs64" => Ok(FieldType::Int(IntType::CompactSize(true))),
+            "varint" => Ok(FieldType::Int(IntType::VarInt)),
+            "varint+" => Ok(FieldType::Int(IntType::VarIntNonNegative)),
+            "vec" => self.parse_vector_type(tokens, pos),
+            "bytes" => self.parse_bytes_type(tokens, pos),
+            "slice" => self.parse_slice_type(tokens, pos),
+            _ => {
+                if self.descriptors.contains_key(base_type) {
+                    Ok(FieldType::Struct(base_type.to_string()))
+                } else {
+                    Err(format!("Undefined type: {}", base_type))
+                }
+            }
+        }
+    }
+
+    fn parse_vector_type(&self, tokens: &[Token], pos: &mut usize) -> Result<FieldType, String> {
+        match tokens.get(*pos) {
+            Some(Token::OpenAngle) => {
+                *pos += 1;
+            }
+            _ => return Err(self.err("Expected '<' after vec".to_string())),
         };
 
-        if let Some(field_type) = primitive_type {
-            return Ok(field_type);
+        let inner_type_name = match tokens.get(*pos) {
+            Some(Token::Identifier(inner_type_name)) => inner_type_name.clone(),
+            _ => return Err(self.err("Expected type after vec".to_string())),
+        };
+        *pos += 1;
+
+        if inner_type_name == "slice" {
+            return Err(self.err("Can't nest 'slice' in vec".to_string()));
         }
 
-        match type_str {
-            _ if type_str.starts_with("vec<") => {
-                // Find the matching closing bracket
-                let mut depth = 0;
-                let mut end_pos = 0;
+        let inner_type = self.parse_type(&inner_type_name, tokens, pos)?;
 
-                for (i, c) in type_str[4..].chars().enumerate() {
-                    match c {
-                        '<' => depth += 1,
-                        '>' => {
-                            if depth == 0 {
-                                end_pos = i + 4; // Add 4 to account for "vec<" prefix
-                                break;
+        match tokens.get(*pos) {
+            Some(Token::CloseAngle) => *pos += 1,
+            _ => return Err(self.err("Expected '>' after vec type".to_string())),
+        }
+
+        Ok(FieldType::Vec(Box::new(inner_type)))
+    }
+
+    fn parse_bytes_type(&self, tokens: &[Token], pos: &mut usize) -> Result<FieldType, String> {
+        match tokens.get(*pos) {
+            Some(Token::OpenAngle) => {
+                *pos += 1;
+                match tokens.get(*pos) {
+                    Some(Token::Number(size)) => {
+                        *pos += 1;
+                        match tokens.get(*pos) {
+                            Some(Token::CloseAngle) => {
+                                *pos += 1;
+                                Ok(FieldType::Bytes(*size as usize))
                             }
-                            depth -= 1;
+                            _ => Err(self.err("Expected '>' after size".to_string())),
                         }
-                        _ => {}
                     }
+                    _ => Err(self.err("Expected number after bytes<".to_string())),
                 }
-
-                if end_pos == 0 || end_pos != type_str.len() - 1 {
-                    return Err(format!("Malformed vector type: {}", type_str));
-                }
-
-                let inner = &type_str[4..end_pos];
-                let inner_type = self.parse_base_type(inner.trim())?;
-                Ok(FieldType::Vec(Box::new(inner_type)))
             }
-            _ if type_str.starts_with("bytes<") && type_str.ends_with('>') => {
-                let size_str = &type_str[6..type_str.len() - 1];
-                let size = size_str
-                    .parse::<usize>()
-                    .map_err(|_| format!("Invalid bytes size: {}", size_str))?;
-                Ok(FieldType::Bytes(size))
-            }
-            _ if type_str.starts_with("slice<") => {
-                let inner = &type_str[6..];
-                let mut depth = 0;
-                let mut comma_pos = None;
+            _ => Err(self.err("Expected '<' after bytes".to_string())),
+        }
+    }
 
-                for (i, c) in inner.chars().enumerate() {
-                    match c {
-                        '<' => depth += 1,
-                        '>' => {
-                            if depth == 0 {
-                                break;
+    fn parse_slice_type(&self, tokens: &[Token], pos: &mut usize) -> Result<FieldType, String> {
+        match tokens.get(*pos) {
+            Some(Token::OpenAngle) => {
+                *pos += 1;
+                let element_type = self.parse_type_until_comma(tokens, pos)?;
+
+                match tokens.get(*pos) {
+                    Some(Token::Quote) => {
+                        *pos += 1;
+                        match tokens.get(*pos) {
+                            Some(Token::Number(index)) => {
+                                *pos += 1;
+                                match tokens.get(*pos) {
+                                    Some(Token::Quote) => {
+                                        *pos += 1;
+                                        match tokens.get(*pos) {
+                                            Some(Token::CloseAngle) => {
+                                                *pos += 1;
+                                                Ok(FieldType::Slice(Box::new(element_type), *index))
+                                            }
+                                            _ => Err(self.err(
+                                                "Expected '>' after slice reference".to_string(),
+                                            )),
+                                        }
+                                    }
+                                    _ => Err(self.err(
+                                        "Expected closing quote for slice length field".to_string(),
+                                    )),
+                                }
                             }
-                            depth -= 1;
+                            _ => Err(self.err("Expected length field index as number".to_string())),
                         }
-                        ',' => {
-                            if depth == 0 {
-                                comma_pos = Some(i);
-                                break;
-                            }
-                        }
-                        _ => {}
                     }
-                }
-
-                let comma_pos =
-                    comma_pos.ok_or_else(|| format!("Invalid slice format: {}", type_str))?;
-
-                let type_part = &inner[..comma_pos].trim();
-                let index_part = &inner[comma_pos + 1..].trim_end_matches('>').trim();
-
-                let field_ref = index_part.trim_matches('\'');
-                let field_index = field_ref.parse::<u64>().map_err(|_| {
-                    format!(
-                        "Invalid field reference '{}' - must be a numeric index",
-                        field_ref
-                    )
-                })?;
-
-                Ok(FieldType::Slice(
-                    Box::new(self.parse_base_type(type_part)?),
-                    field_index,
-                ))
-            }
-            _ => {
-                // Only check for struct types if nothing else matched
-                if self.descriptors.contains_key(type_str) {
-                    Ok(FieldType::Struct(type_str.to_string()))
-                } else {
-                    Err(format!("Undefined struct type: {}", type_str))
+                    _ => Err(self.err("Expected quote for slice length field".to_string())),
                 }
             }
+            _ => Err(self.err("Expected '<' after slice".to_string())),
+        }
+    }
+
+    fn parse_type_until_comma(
+        &self,
+        tokens: &[Token],
+        pos: &mut usize,
+    ) -> Result<FieldType, String> {
+        let type_token = match tokens.get(*pos) {
+            Some(Token::Identifier(name)) => name.clone(),
+            _ => return Err(self.err("Expected type identifier".to_string())),
+        };
+        *pos += 1;
+
+        if type_token == "slice" {
+            return Err(self.err("Can't nest slices".to_string()));
+        }
+
+        match tokens.get(*pos) {
+            Some(Token::Comma) => {
+                *pos += 1;
+                self.parse_type(&type_token, tokens, pos)
+            }
+            _ => Err(self.err("Expected ','".to_string())),
         }
     }
 
@@ -437,7 +417,7 @@ mod tests {
 
     #[test]
     fn test_nested_vectors() -> Result<(), String> {
-        let msg = parse_single_message("Test { vec<vec<u8>>, vec<u32> }")?;
+        let msg = parse_single_message("Test { vec<vec<u8>>, vec<u32> }").unwrap();
         assert_eq!(msg.fields.len(), 2);
 
         if let FieldType::Vec(inner) = &msg.fields[0].field_type {
@@ -454,7 +434,7 @@ mod tests {
 
     #[test]
     fn test_constant_values() -> Result<(), String> {
-        let msg = parse_single_message("Test { u8(0xff), bytes<2>(0xffff) }")?;
+        let msg = parse_single_message("Test { u8(0xff), bytes<2>(0xffff) }").unwrap();
         assert_eq!(msg.fields.len(), 2);
 
         assert_eq!(msg.fields[0].constant_value, Some(vec![0xff]));
@@ -465,7 +445,7 @@ mod tests {
     #[test]
     fn test_struct_references() -> Result<(), String> {
         let mut parser = DescriptorParser::new();
-        parser.parse_file("Inner { u8 }\nOuter { Inner }")?;
+        parser.parse_file("Inner { u8 }\nOuter { Inner }").unwrap();
 
         let outer = parser.descriptors.get("Outer").unwrap();
         assert_eq!(outer.fields.len(), 1);
