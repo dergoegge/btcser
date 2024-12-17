@@ -8,6 +8,10 @@ rand = "0.8.5"
 hex = "0.4"
 btcser = { path = "../btcser" }
 
+[lib]
+name = "btcser_mutator"
+crate-type = ["cdylib", "staticlib", "rlib"]
+
 [[bin]]
 name = "mutator"
 path = "src/bin/mutator.rs"

@@ -105,19 +105,18 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
                 match &**inner_type {
                     // For Vec<u8>, treat as a single byte array but preserve the length
                     FieldType::Int(IntType::U8) => {
-                        let mut bytes = value.bytes.to_vec();
-                        let length_size = match bytes[0] {
+                        let length_size = match value.bytes[0] {
                             0..=252 => 1,
                             253 => 3,
                             254 => 5,
                             255 => 9,
                         };
+                        let mut bytes = value.bytes[length_size..].to_vec();
                         // Only mutate the content, preserving the length prefix
-                        if bytes.len() > length_size {
-                            self.byte_array_mutator
-                                .mutate_in_place(&mut bytes[length_size..]);
-                        }
-                        Ok(bytes)
+                        self.byte_array_mutator.mutate(&mut bytes);
+                        let mut len_prefixed = encode_compact_size(bytes.len() as u64);
+                        len_prefixed.extend_from_slice(&bytes);
+                        Ok(len_prefixed)
                     }
                     // For other vector types, return as is (handled by Add/Delete mutations)
                     _ => Ok(value.bytes.to_vec()),
@@ -1007,8 +1006,6 @@ impl<'p> Mutator<'p> {
             Mutation::Clone(None) => Mutation::Clone(Some(source_value.bytes.to_vec())),
             _ => unreachable!(),
         };
-
-        println!("{} -> {:#?}", data_source, mutation);
 
         // Perform the mutation
         let performed = mutate(&values_to_mutate, mutation, &mutator, self.parser)?;
