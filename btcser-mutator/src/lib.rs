@@ -16,6 +16,8 @@ pub enum Mutation {
     Add,
     Delete,
     Mutate,
+    Copy(Option<Vec<u8>>), // Overwrite the value of one field with that of another
+    Clone(Option<Vec<u8>>), // Create a new field by copying the value of another
 }
 
 #[derive(Debug, Clone)]
@@ -436,9 +438,12 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
     };
 
     match mutation.mutation {
-        Mutation::Mutate => {
-            // Simple mutation of a single value
-            let mutated_bytes = mutator.mutate(value)?;
+        Mutation::Mutate | Mutation::Copy(Some(_)) => {
+            let mutated_bytes = match mutation.mutation {
+                Mutation::Mutate => mutator.mutate(value)?,
+                Mutation::Copy(Some(other_bytes)) => other_bytes,
+                _ => unreachable!(),
+            };
             let new_length = mutated_bytes.len();
 
             let mut mutations = vec![PerformedMutation {
@@ -463,7 +468,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
 
             Ok(mutations)
         }
-        Mutation::Add => {
+        Mutation::Add | Mutation::Clone(Some(_)) => {
             let element_type = match &value.field_type {
                 FieldType::Vec(inner_type) => inner_type,
                 FieldType::Slice(inner_type, _) => inner_type,
@@ -471,7 +476,11 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
                     return Err("Can only add elements to Vec or Slice types".to_string());
                 }
             };
-            let new_element = mutator.generate(&**element_type, parser)?;
+            let new_element = match mutation.mutation {
+                Mutation::Add => mutator.generate(&**element_type, parser)?,
+                Mutation::Clone(Some(cloned_bytes)) => cloned_bytes,
+                _ => unreachable!(),
+            };
             let new_length = value.nested_values.len() + 1;
 
             let mut mutations = vec![PerformedMutation {
@@ -557,6 +566,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
 
             Ok(mutations)
         }
+        _ => Err("unsupported mutation".to_string()),
     }
 }
 
@@ -625,6 +635,7 @@ fn finalize_mutations<'a>(
                 serialized.extend(&value.bytes[..value.bytes.len() - element_size]);
                 current_position = value_start + value.bytes.len();
             }
+            _ => return Err("unsupported mutation".to_string()),
         }
     }
 
@@ -647,9 +658,12 @@ impl<'p> Mutator<'p> {
         values: &'a [SerializedValue<'a>],
         sampler: &mut S,
         current_path: Vec<usize>,
+        cross_over: bool,
     ) where
         S: WeightedReservoirSampler<SampledMutation>,
     {
+        let (cross_over_weight, mutate_weight) = if cross_over { (1.0, 0.0) } else { (0.0, 1.0) };
+
         // For each value at the current level
         for (idx, value) in values.iter().enumerate() {
             let mut path = current_path.clone();
@@ -663,10 +677,19 @@ impl<'p> Mutator<'p> {
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
+                                path: field_path.clone(),
+                                additional_path: None,
+                            },
+                            mutate_weight,
+                        );
+
+                        sampler.add(
+                            SampledMutation {
+                                mutation: Mutation::Copy(None),
                                 path: field_path,
                                 additional_path: None,
                             },
-                            1.0,
+                            cross_over_weight,
                         );
                     }
                 }
@@ -675,42 +698,81 @@ impl<'p> Mutator<'p> {
                     if value.length_field_for.is_none() {
                         sampler.add(
                             SampledMutation {
+                                mutation: Mutation::Copy(None),
+                                path: field_path.clone(),
+                                additional_path: None,
+                            },
+                            cross_over_weight,
+                        );
+
+                        sampler.add(
+                            SampledMutation {
                                 mutation: Mutation::Mutate,
                                 path: field_path,
                                 additional_path: None,
                             },
-                            1.0,
+                            mutate_weight,
                         );
                     }
                 }
                 FieldType::Bytes(_) => {
                     sampler.add(
                         SampledMutation {
+                            mutation: Mutation::Copy(None),
+                            path: field_path.clone(),
+                            additional_path: None,
+                        },
+                        cross_over_weight,
+                    );
+
+                    sampler.add(
+                        SampledMutation {
                             mutation: Mutation::Mutate,
                             path: field_path,
                             additional_path: None,
                         },
-                        1.0,
+                        mutate_weight,
                     );
                 }
                 FieldType::Vec(inner_type) => {
-                    if matches!(**inner_type, FieldType::Int(IntType::U8)) {
+                    if value.length_field_for.is_none() {
                         sampler.add(
                             SampledMutation {
-                                mutation: Mutation::Mutate,
-                                path: field_path,
+                                mutation: Mutation::Copy(None),
+                                path: field_path.clone(),
                                 additional_path: None,
                             },
-                            1.0,
+                            cross_over_weight,
                         );
+                    }
+
+                    if matches!(**inner_type, FieldType::Int(IntType::U8)) {
+                        if value.length_field_for.is_none() {
+                            sampler.add(
+                                SampledMutation {
+                                    mutation: Mutation::Mutate,
+                                    path: field_path,
+                                    additional_path: None,
+                                },
+                                mutate_weight,
+                            );
+                        }
                     } else {
+                        sampler.add(
+                            SampledMutation {
+                                mutation: Mutation::Clone(None),
+                                path: field_path.clone(),
+                                additional_path: None,
+                            },
+                            cross_over_weight,
+                        );
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Add,
                                 path: field_path.clone(),
                                 additional_path: None,
                             },
-                            1.0,
+                            mutate_weight,
                         );
 
                         if !value.nested_values.is_empty() {
@@ -720,11 +782,11 @@ impl<'p> Mutator<'p> {
                                     path: field_path,
                                     additional_path: None,
                                 },
-                                1.0,
+                                mutate_weight,
                             );
                         }
 
-                        self.sample_mutations(&value.nested_values, sampler, path);
+                        self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                     }
                 }
                 FieldType::Slice(inner_type, idx) => {
@@ -736,13 +798,25 @@ impl<'p> Mutator<'p> {
                     let length_field = &values[*idx as usize];
 
                     if matches!(**inner_type, FieldType::Int(IntType::U8)) {
+                        // TODO allow copying for all slices not just byte slices. For that, we'll
+                        // need to store the length of the slice to be copied on the copy mutation
+                        // somehow...
+                        sampler.add(
+                            SampledMutation {
+                                mutation: Mutation::Copy(None),
+                                path: field_path.clone(),
+                                additional_path: Some(additional_path.clone()),
+                            },
+                            cross_over_weight,
+                        );
+
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
                                 path: field_path,
                                 additional_path: Some(additional_path),
                             },
-                            1.0,
+                            mutate_weight,
                         );
                     } else {
                         // For boolean length fields, only allow Add if the slice is empty
@@ -754,11 +828,20 @@ impl<'p> Mutator<'p> {
                         if should_allow_add {
                             sampler.add(
                                 SampledMutation {
+                                    mutation: Mutation::Clone(None),
+                                    path: field_path.clone(),
+                                    additional_path: Some(additional_path.clone()),
+                                },
+                                cross_over_weight,
+                            );
+
+                            sampler.add(
+                                SampledMutation {
                                     mutation: Mutation::Add,
                                     path: field_path.clone(),
                                     additional_path: Some(additional_path.clone()),
                                 },
-                                1.0,
+                                mutate_weight,
                             );
                         }
 
@@ -769,16 +852,54 @@ impl<'p> Mutator<'p> {
                                     path: field_path,
                                     additional_path: Some(additional_path),
                                 },
-                                1.0,
+                                mutate_weight,
                             );
                         }
 
-                        self.sample_mutations(&value.nested_values, sampler, path);
+                        self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                     }
                 }
                 FieldType::Struct(_) => {
-                    self.sample_mutations(&value.nested_values, sampler, path);
+                    sampler.add(
+                        SampledMutation {
+                            mutation: Mutation::Copy(None),
+                            path: field_path.clone(),
+                            additional_path: None,
+                        },
+                        cross_over_weight,
+                    );
+
+                    self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                 }
+            }
+        }
+    }
+
+    fn sample_data_sources<'a, S>(
+        &self,
+        values: &'a [SerializedValue<'a>],
+        field_type: &FieldType,
+        sampler: &mut S,
+        current_path: Vec<usize>,
+    ) where
+        S: WeightedReservoirSampler<FieldPath>,
+    {
+        // For each value at the current level
+        for (idx, value) in values.iter().enumerate() {
+            let mut path = current_path.clone();
+            path.push(idx);
+
+            // Check if this value's type matches the target field_type
+            if value.field_type == *field_type {
+                sampler.add(FieldPath::new(path.clone()), 1.0);
+            }
+
+            // Recursively check nested values
+            match &value.field_type {
+                FieldType::Vec(_) | FieldType::Slice(_, _) | FieldType::Struct(_) => {
+                    self.sample_data_sources(&value.nested_values, field_type, sampler, path);
+                }
+                _ => {} // Other types don't have nested values
             }
         }
     }
@@ -809,7 +930,7 @@ impl<'p> Mutator<'p> {
         // Attempt parsing the blob according to `self.descriptor`
         let values = obj_parser.parse(data)?;
         // Given the parsed object, sample all possible mutations and pick one!
-        self.sample_mutations(&values, &mut sampler, vec![]);
+        self.sample_mutations(&values, &mut sampler, vec![], false); // no cross-over
         let mutation = sampler
             .get_sample()
             .ok_or_else(|| "No mutation sample available".to_string())?;
@@ -818,6 +939,83 @@ impl<'p> Mutator<'p> {
         let performed = mutate(&values, mutation, &mutator, self.parser)?;
         // Reserialize the object with the mutation applied
         finalize_mutations(data, &values, performed)
+    }
+
+    pub fn cross_over<'b, S, D, M>(
+        &self,
+        to_mutate: &'b [u8],
+        sample_from: &'b [u8],
+        seed: u64,
+    ) -> Result<Vec<u8>, String>
+    where
+        S: WeightedReservoirSampler<SampledMutation>,
+        D: WeightedReservoirSampler<FieldPath>,
+        M: for<'a> SerializedValueMutator<'a>,
+        'b: 'p,
+    {
+        let mut sampler = S::new(seed);
+        let mutator = M::new(seed);
+        let obj_parser = ObjectParser::new(self.descriptor.clone(), self.parser);
+
+        let values_to_mutate = obj_parser.parse(to_mutate)?;
+        let values_to_sample_from = obj_parser.parse(sample_from)?;
+
+        self.sample_mutations(&values_to_mutate, &mut sampler, vec![], true);
+        let mut mutation = sampler
+            .get_sample()
+            .ok_or_else(|| "No mutation sample available".to_string())?;
+
+        let data_source = match mutation.mutation {
+            Mutation::Clone(None) | Mutation::Copy(None) => {
+                let mut source_sampler = D::new(seed);
+                let value = find_value_in_object(&values_to_mutate, &mutation.path)
+                    .expect("path to sampled mutation has to exist");
+
+                // Get the target type based on mutation type
+                let target_type = match &mutation.mutation {
+                    Mutation::Clone(None) => match &value.field_type {
+                        FieldType::Vec(inner_type) => &**inner_type,
+                        FieldType::Slice(inner_type, _) => &**inner_type,
+                        _ => &value.field_type,
+                    },
+                    Mutation::Copy(None) => &value.field_type,
+                    _ => unreachable!(),
+                };
+
+                // Sample data sources using the correct type
+                self.sample_data_sources(
+                    &values_to_sample_from,
+                    target_type,
+                    &mut source_sampler,
+                    vec![],
+                );
+
+                source_sampler
+                    .get_sample()
+                    .ok_or_else(|| "no data source found".to_string())
+            }
+            _ => {
+                return Err(
+                    "Only Clone and Copy are supported during cross-over mutations!".to_string(),
+                )
+            }
+        }?;
+
+        let source_value = find_value_in_object(&values_to_sample_from, &data_source)
+            .expect("path to sampled data source has to exist");
+
+        mutation.mutation = match mutation.mutation.clone() {
+            Mutation::Copy(None) => Mutation::Copy(Some(source_value.bytes.to_vec())),
+            Mutation::Clone(None) => Mutation::Clone(Some(source_value.bytes.to_vec())),
+            _ => unreachable!(),
+        };
+
+        println!("{} -> {:#?}", data_source, mutation);
+
+        // Perform the mutation
+        let performed = mutate(&values_to_mutate, mutation, &mutator, self.parser)?;
+        // Reserialize the object with the mutation applied
+        finalize_mutations(to_mutate, &values_to_mutate, performed)
     }
 
     /// Creates a new Mutator instance with the given descriptor and parser.
@@ -887,7 +1085,7 @@ mod tests {
 
         let values = obj_parser.parse(&data).unwrap();
         let mut sampler = TestSampler::new(0);
-        mutator.sample_mutations(&values, &mut sampler, Vec::new());
+        mutator.sample_mutations(&values, &mut sampler, Vec::new(), false);
 
         // We expect 3 Mutate mutations (one for each field)
         let samples = sampler.get_samples();
@@ -944,16 +1142,12 @@ mod tests {
 
         let values = obj_parser.parse(&data).unwrap();
         let mut sampler = TestSampler::new(0);
-        mutator.sample_mutations(&values, &mut sampler, Vec::new());
+        mutator.sample_mutations(&values, &mut sampler, Vec::new(), false);
 
-        // We expect exactly 2 Mutate mutations (one for vec<u8>, one for slice<u8>)
+        // We expect exactly 1 Mutate mutation (for slice)
         let samples = sampler.get_samples();
-        assert_eq!(samples.len(), 2);
-
-        // Both should be Mutate mutations
-        for sample in samples {
-            assert!(matches!(sample.mutation, Mutation::Mutate));
-        }
+        assert_eq!(samples.len(), 1);
+        assert!(matches!(samples[0].mutation, Mutation::Mutate));
 
         Ok(())
     }
@@ -984,7 +1178,7 @@ mod tests {
 
         let values = obj_parser.parse(&data).unwrap();
         let mut sampler = TestSampler::new(0);
-        mutator.sample_mutations(&values, &mut sampler, Vec::new());
+        mutator.sample_mutations(&values, &mut sampler, Vec::new(), false);
 
         // We expect:
         // 1. Mutations for the slice itself (add, delete), additional_path required
@@ -1617,6 +1811,324 @@ mod tests {
                 ],
                 "stress test edge case #2",
             ),
+            (
+                // Copy u16 value
+                r#"Test {
+                    u16,            # first u16
+                    u16,            # second u16 (target for copy)
+                    bytes<2>        # trailing bytes
+                }"#,
+                vec![
+                    0x34, 0x12, // first u16 (LE)
+                    0x78, 0x56, // second u16 (LE)
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Copy(Some(vec![0x34, 0x12])), // Copy first u16's value
+                    path: FieldPath::new(vec![1]),                    // Target second u16
+                    additional_path: None,
+                },
+                vec![
+                    0x34, 0x12, // original first u16
+                    0x34, 0x12, // copied value
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "copy u16 value",
+            ),
+            (
+                // Clone element into vec<u16>
+                r#"Test {
+                    vec<u16>,        # vector of u16s
+                    u16,             # source u16 to clone
+                    bytes<2>         # trailing bytes
+                }"#,
+                vec![
+                    0x02, // length = 2
+                    0x34, 0x12, // first u16 (LE)
+                    0x78, 0x56, // second u16 (LE)
+                    0x99, 0x88, // source u16
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Clone(Some(vec![0x99, 0x88])), // Clone source u16's value
+                    path: FieldPath::new(vec![0]),                     // Target vector
+                    additional_path: None,
+                },
+                vec![
+                    0x03, // length now 3
+                    0x34, 0x12, // original first u16
+                    0x78, 0x56, // original second u16
+                    0x99, 0x88, // cloned value
+                    0x99, 0x88, // original source u16
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "clone u16 into vector",
+            ),
+            (
+                // Copy slice element
+                r#"Test {
+                    u8,                 # length field
+                    slice<u16, '0'>,    # slice of u16s
+                    bytes<2>            # trailing bytes
+                }"#,
+                vec![
+                    0x02, // length = 2
+                    0x34, 0x12, // first u16 (LE)
+                    0x78, 0x56, // second u16 (LE)
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Copy(Some(vec![0x34, 0x12])), // Copy first u16's value
+                    path: FieldPath::new(vec![1, 1]),                 // Target second slice element
+                    additional_path: None,
+                },
+                vec![
+                    0x02, // length still 2
+                    0x34, 0x12, // original first u16
+                    0x34, 0x12, // copied value
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "copy slice element",
+            ),
+            (
+                // Clone element into nested vec
+                r#"Test {
+                    vec<vec<u16>>,   # vector of vectors of u16s
+                    u16,             # source u16 to clone
+                    bytes<2>         # trailing bytes
+                }"#,
+                vec![
+                    0x02, // outer length = 2
+                    0x01, // first inner length = 1
+                    0x34, 0x12, // first inner vector's u16
+                    0x02, // second inner length = 2
+                    0x56, 0x34, // second inner vector's first u16
+                    0x78, 0x56, // second inner vector's second u16
+                    0x99, 0x88, // source u16
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Clone(Some(vec![0x99, 0x88])), // Clone source u16's value
+                    path: FieldPath::new(vec![0, 1]),                  // Target second inner vector
+                    additional_path: None,
+                },
+                vec![
+                    0x02, // outer length still 2
+                    0x01, // first inner length still 1
+                    0x34, 0x12, // first inner vector's u16
+                    0x03, // second inner length now 3
+                    0x56, 0x34, // second inner vector's first u16
+                    0x78, 0x56, // second inner vector's second u16
+                    0x99, 0x88, // cloned value
+                    0x99, 0x88, // original source u16
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "clone into nested vector",
+            ),
+            (
+                // Copy struct value
+                r#"Inner { u16, bool }
+                   Test {
+                       Inner,           # first struct
+                       Inner,           # second struct (target for copy)
+                       bytes<2>         # trailing bytes
+                   }"#,
+                vec![
+                    0x34, 0x12, // first Inner.u16
+                    0x01, // first Inner.bool
+                    0x78, 0x56, // second Inner.u16
+                    0x00, // second Inner.bool
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Copy(Some(vec![0x34, 0x12, 0x01])), // Copy first Inner's value
+                    path: FieldPath::new(vec![1]),                          // Target second Inner
+                    additional_path: None,
+                },
+                vec![
+                    0x34, 0x12, // original first Inner.u16
+                    0x01, // original first Inner.bool
+                    0x34, 0x12, // copied Inner.u16
+                    0x01, // copied Inner.bool
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "copy struct value",
+            ),
+            (
+                // Clone struct into vector
+                r#"Inner { u16, bool }
+                   Test {
+                       vec<Inner>,      # vector of Inner structs
+                       Inner,           # source Inner to clone
+                       bytes<2>         # trailing bytes
+                   }"#,
+                vec![
+                    0x02, // length = 2
+                    0x34, 0x12, // first Inner.u16
+                    0x01, // first Inner.bool
+                    0x78, 0x56, // second Inner.u16
+                    0x00, // second Inner.bool
+                    0x99, 0x88, // source Inner.u16
+                    0x01, // source Inner.bool
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Clone(Some(vec![0x99, 0x88, 0x01])), // Clone source Inner's value
+                    path: FieldPath::new(vec![0]),                           // Target vector
+                    additional_path: None,
+                },
+                vec![
+                    0x03, // length now 3
+                    0x34, 0x12, // original first Inner.u16
+                    0x01, // original first Inner.bool
+                    0x78, 0x56, // original second Inner.u16
+                    0x00, // original second Inner.bool
+                    0x99, 0x88, // cloned Inner.u16
+                    0x01, // cloned Inner.bool
+                    0x99, 0x88, // original source Inner.u16
+                    0x01, // original source Inner.bool
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "clone struct into vector",
+            ),
+            (
+                // Clone into slice
+                r#"Inner { u16, bool }
+                   Test {
+                       u8,              # length field
+                       slice<Inner, '0'>, # slice of Inner structs
+                       Inner,           # source Inner
+                       bytes<2>         # trailing bytes
+                   }"#,
+                vec![
+                    0x02, // length = 2
+                    0x34, 0x12, // first Inner.u16
+                    0x01, // first Inner.bool
+                    0x78, 0x56, // second Inner.u16
+                    0x00, // second Inner.bool
+                    0x99, 0x88, // source Inner.u16
+                    0x01, // source Inner.bool
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Clone(Some(vec![0x99, 0x88, 0x01])), // Clone source Inner's value
+                    path: FieldPath::new(vec![1]),                           // Target slice
+                    additional_path: Some(FieldPath::new(vec![0])),          // Length field path
+                },
+                vec![
+                    0x03, // length now 3
+                    0x34, 0x12, // original first Inner.u16
+                    0x01, // original first Inner.bool
+                    0x78, 0x56, // original second Inner.u16
+                    0x00, // original second Inner.bool
+                    0x99, 0x88, // cloned Inner.u16
+                    0x01, // cloned Inner.bool
+                    0x99, 0x88, // original source Inner.u16
+                    0x01, // original source Inner.bool
+                    0xAA, 0xBB, // original trailing bytes
+                ],
+                "clone into slice",
+            ),
+            (
+                // Copy vector of u16s
+                r#"Test {
+                    vec<u16>,        # first vector
+                    vec<u16>,        # second vector (target for copy)
+                    bytes<2>         # trailing bytes
+                }"#,
+                vec![
+                    0x02, // first vec length = 2
+                    0x34, 0x12, // first vec u16 #1
+                    0x78, 0x56, // first vec u16 #2
+                    0x01, // second vec length = 1
+                    0x99, 0x88, // second vec u16 #1
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Copy(Some(vec![0x02, 0x34, 0x12, 0x78, 0x56])), // Copy first vector's value
+                    path: FieldPath::new(vec![1]), // Target second vector
+                    additional_path: None,
+                },
+                vec![
+                    0x02, // first vec length = 2
+                    0x34, 0x12, // first vec u16 #1
+                    0x78, 0x56, // first vec u16 #2
+                    0x02, // second vec length now 2
+                    0x34, 0x12, // copied u16 #1
+                    0x78, 0x56, // copied u16 #2
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                "copy vector of u16s",
+            ),
+            (
+                // Clone vector into another vector
+                r#"Test {
+                    vec<vec<u16>>,   # outer vector
+                    vec<u16>,        # source vector
+                    bytes<2>         # trailing bytes
+                }"#,
+                vec![
+                    0x02, // outer vec length = 2
+                    0x01, // first inner vec length = 1
+                    0x34, 0x12, // first inner vec u16
+                    0x01, // second inner vec length = 1
+                    0x56, 0x34, // second inner vec u16
+                    0x02, // source vec length = 2
+                    0x99, 0x88, // source vec u16 #1
+                    0x77, 0x66, // source vec u16 #2
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Clone(Some(vec![0x02, 0x99, 0x88, 0x77, 0x66])), // Clone source vector
+                    path: FieldPath::new(vec![0]), // Target outer vector
+                    additional_path: None,
+                },
+                vec![
+                    0x03, // outer vec length now 3
+                    0x01, // first inner vec length = 1
+                    0x34, 0x12, // first inner vec u16
+                    0x01, // second inner vec length = 1
+                    0x56, 0x34, // second inner vec u16
+                    0x02, // new inner vec length = 2
+                    0x99, 0x88, // cloned u16 #1
+                    0x77, 0x66, // cloned u16 #2
+                    0x02, // source vec length = 2
+                    0x99, 0x88, // source vec u16 #1
+                    0x77, 0x66, // source vec u16 #2
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                "clone vector into vector",
+            ),
+            (
+                // Copy slice of u8s
+                r#"Test {
+                    u8,                # first length field
+                    slice<u8, '0'>,    # first slice
+                    u8,                # second length field
+                    slice<u8, '2'>,    # second slice (target for copy)
+                    bytes<2>           # trailing bytes
+                }"#,
+                vec![
+                    0x02, // first slice length = 2
+                    0x12, 0x34, // first slice bytes
+                    0x01, // second slice length = 1
+                    0x88, // second slice byte
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                SampledMutation {
+                    mutation: Mutation::Copy(Some(vec![0x12, 0x34])), // Copy first slice's value
+                    path: FieldPath::new(vec![3]),                    // Target second slice
+                    additional_path: Some(FieldPath::new(vec![2])),   // Second length field path
+                },
+                vec![
+                    0x02, // first slice length = 2
+                    0x12, 0x34, // first slice bytes
+                    0x02, // second slice length now 2
+                    0x12, 0x34, // copied bytes
+                    0xAA, 0xBB, // trailing bytes
+                ],
+                "copy slice of u8s",
+            ),
         ];
 
         // Run all test cases
@@ -1766,64 +2278,179 @@ mod tests {
         parser.parse_file(descriptor_str).unwrap();
         let descriptor = parser.get_descriptor("Test").unwrap().clone();
 
-        println!("{:#?}", parser.get_descriptor("Inner2").unwrap());
-
         // Create mutator instances
         let mutator = Mutator::new(descriptor.clone(), &parser);
         let value_mutator = StdSerializedValueMutator {
             byte_array_mutator: TestByteArrayMutator,
         };
 
-        // Generate initial blob
+        // Generate two initial blobs for cross-over testing
         let mut current_blob = value_mutator
+            .generate(&FieldType::Struct("Test".to_string()), &parser)
+            .unwrap();
+        let mut donor_blob = value_mutator
             .generate(&FieldType::Struct("Test".to_string()), &parser)
             .unwrap();
 
         // Track mutations for verification
         let mut size_changes = Vec::new();
+        let mut crossover_size_changes = Vec::new();
 
-        // Perform multiple mutations
+        // Perform multiple mutations, alternating between regular mutations and cross-over
         for seed in 0..1000 {
-            // Try to mutate the current blob
-            println!("Mutating {:?}", current_blob);
-            match mutator.mutate::<ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(
-                &current_blob,
-                seed,
-            ) {
-                Ok(mutated_blob) => {
-                    // Track size changes
-                    size_changes.push(mutated_blob.len() as i64 - current_blob.len() as i64);
+            if seed % 2 == 0 {
+                // Regular mutation
+                println!("Regular mutation on {:?}", current_blob);
+                match mutator
+                    .mutate::<ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(
+                        &current_blob,
+                        seed,
+                    ) {
+                    Ok(mutated_blob) => {
+                        size_changes.push(mutated_blob.len() as i64 - current_blob.len() as i64);
 
-                    // Verify the mutated blob can still be parsed
-                    let obj_parser = ObjectParser::new(descriptor.clone(), &parser);
-                    if let Err(e) = obj_parser.parse(&mutated_blob) {
-                        eprintln!("Mutation {} failed: {:#?}: {:?}", seed, e, mutated_blob);
-                        assert!(false);
+                        // Verify the mutated blob can still be parsed
+                        let obj_parser = ObjectParser::new(descriptor.clone(), &parser);
+                        if let Err(e) = obj_parser.parse(&mutated_blob) {
+                            eprintln!("Mutation {} failed: {:#?}: {:?}", seed, e, mutated_blob);
+                            assert!(false);
+                        }
+
+                        current_blob = mutated_blob;
                     }
-
-                    current_blob = mutated_blob;
+                    Err(e) => {
+                        println!("Mutation {} failed: {}", seed, e);
+                    }
                 }
-                Err(e) => {
-                    println!("Mutation {} failed: {}", seed, e);
+            } else {
+                // Cross-over mutation
+                println!("Cross-over between {:?} and {:?}", current_blob, donor_blob);
+                match mutator.cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(
+                    &current_blob,
+                    &donor_blob,
+                    seed,
+                ) {
+                    Ok(crossed_blob) => {
+                        crossover_size_changes.push(crossed_blob.len() as i64 - current_blob.len() as i64);
+
+                        // Verify the crossed blob can still be parsed
+                        let obj_parser = ObjectParser::new(descriptor.clone(), &parser);
+                        if let Err(e) = obj_parser.parse(&crossed_blob) {
+                            eprintln!("Cross-over {} failed: {:#?}: {:?}", seed, e, crossed_blob);
+                            assert!(false);
+                        }
+
+                        // Alternate which blob gets updated
+                        if seed % 4 == 1 {
+                            current_blob = crossed_blob;
+                        } else {
+                            donor_blob = crossed_blob;
+                        }
+                    }
+                    Err(e) => {
+                        println!("Cross-over {} failed: {}", seed, e);
+                    }
                 }
             }
         }
 
-        // Verify test results
-        println!("Size changes: {:?}", size_changes);
+        // Print and verify test results
+        println!("Regular mutation size changes: {:?}", size_changes);
+        println!("Cross-over size changes: {:?}", crossover_size_changes);
 
-        // Calculate size change statistics
+        // Calculate size change statistics for regular mutations
         let max_growth = size_changes.iter().max().unwrap_or(&0);
         let max_shrink = size_changes.iter().min().unwrap_or(&0);
-        println!("Maximum size growth: {}", max_growth);
-        println!("Maximum size shrink: {}", max_shrink);
+        println!("Regular mutations - Maximum size growth: {}", max_growth);
+        println!("Regular mutations - Maximum size shrink: {}", max_shrink);
 
-        // Verify final blob can still be parsed
+        // Calculate size change statistics for cross-over mutations
+        let crossover_max_growth = crossover_size_changes.iter().max().unwrap_or(&0);
+        let crossover_max_shrink = crossover_size_changes.iter().min().unwrap_or(&0);
+        println!(
+            "Cross-over mutations - Maximum size growth: {}",
+            crossover_max_growth
+        );
+        println!(
+            "Cross-over mutations - Maximum size shrink: {}",
+            crossover_max_shrink
+        );
+
+        // Verify both final blobs can still be parsed
         let obj_parser = ObjectParser::new(descriptor, &parser);
         assert!(
             obj_parser.parse(&current_blob).is_ok(),
-            "Final blob is not parseable"
+            "Final current blob is not parseable"
         );
+        assert!(
+            obj_parser.parse(&donor_blob).is_ok(),
+            "Final donor blob is not parseable"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_sample_data_sources() -> Result<(), String> {
+        let mut parser = DescriptorParser::new();
+        parser
+            .parse_file(
+                r#"
+                Inner { u16, bool }
+                Test {
+                    u16,
+                    vec<Inner>,
+                    slice<u16, '0'>,
+                    bool
+                }
+                "#,
+            )
+            .unwrap();
+
+        let descriptor = parser.get_descriptor("Test").unwrap().clone();
+        let mutator = Mutator::new(descriptor.clone(), &parser);
+
+        // Create some test data
+        let data = vec![
+            0x02, 0x00, // first u16
+            0x01, // vec length (1)
+            0x56, 0x78, // Inner.u16
+            0x01, // Inner.bool
+            0x90, 0x12, // slice u16
+            0x34, 0x56, // slice u16
+            0x01, // final bool
+        ];
+
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+        let values = obj_parser.parse(&data).unwrap();
+
+        // Sample u16 fields
+        let mut sampler = TestSampler::new(0);
+        mutator.sample_data_sources(&values, &FieldType::Int(IntType::U16), &mut sampler, vec![]);
+
+        let samples = sampler.get_samples();
+
+        // Should find 4 u16 fields:
+        // - The top-level u16
+        // - The u16 in the Inner struct
+        // - Two u16s in the slice
+        assert_eq!(samples.len(), 4);
+
+        // Verify the paths
+        let expected_paths = vec![
+            vec![0],       // Top-level u16
+            vec![1, 0, 0], // Inner struct's u16
+            vec![2, 0],    // First slice u16
+            vec![2, 1],    // Second slice u16
+        ];
+
+        for path in expected_paths {
+            assert!(
+                samples.iter().any(|s| s.indices == path),
+                "Missing path: {:?}",
+                path
+            );
+        }
 
         Ok(())
     }

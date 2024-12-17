@@ -1,7 +1,7 @@
 use crate::lexer::{Lexer, Token};
 use std::collections::HashMap;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum IntType {
     U8,
     I8,
@@ -26,7 +26,7 @@ pub enum IntType {
     VarIntNonNegative,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FieldType {
     Bool,
     Int(IntType),
@@ -238,7 +238,6 @@ impl DescriptorParser {
         tokens: &[Token],
         pos: &mut usize,
     ) -> Result<FieldType, String> {
-        println!("{} {:?} {}", base_type, tokens, pos);
         match base_type {
             "bool" => Ok(FieldType::Bool),
             "u8" => Ok(FieldType::Int(IntType::U8)),

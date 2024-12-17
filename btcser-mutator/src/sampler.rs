@@ -70,8 +70,10 @@ pub mod tests {
             Self::new(seed)
         }
 
-        fn add(&mut self, item: T, _weight: f64) {
-            self.samples.push(item);
+        fn add(&mut self, item: T, weight: f64) {
+            if weight > 0.0 {
+                self.samples.push(item);
+            }
         }
 
         fn get_sample(self) -> Option<T> {
