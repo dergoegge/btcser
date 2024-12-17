@@ -129,7 +129,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
                     // For Slice<u8>, treat as a single byte array
                     FieldType::Int(IntType::U8) => {
                         let mut bytes = value.bytes.to_vec();
-                        self.byte_array_mutator.mutate_in_place(&mut bytes);
+                        self.byte_array_mutator.mutate(&mut bytes);
                         Ok(bytes)
                     }
                     // For other slice types, return as is (handled by Add/Delete mutations)
