@@ -5,6 +5,7 @@
 
 #ifdef __cplusplus
 #include <utility>
+#include <cassert>
 
 extern "C" {
 #endif
@@ -53,6 +54,7 @@ public:
   ~Mutator() { btcser_mutator_free(mutator); }
   MutatedBuffer mutate(const uint8_t *data, uint32_t data_len, uint64_t seed) {
     MutatedBuffer out;
+    assert(mutator);
     btcser_mutator_mutate(mutator, data, data_len, seed, &out.buffer, &out.len);
     return out;
   }
@@ -60,6 +62,7 @@ public:
                            const uint8_t *data2, uint32_t data2_len,
                            uint64_t seed) {
     MutatedBuffer out;
+    assert(mutator);
     btcser_mutator_cross_over(mutator, data1, data1_len, data2, data2_len, seed,
                               &out.buffer, &out.len);
     return out;

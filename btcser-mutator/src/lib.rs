@@ -37,9 +37,15 @@ pub extern "C" fn btcser_mutator_new(
     let descriptor = match parser.parse_file(descriptor_str) {
         Ok(_) => match parser.get_descriptor(name_str) {
             Some(d) => d.clone(),
-            None => return std::ptr::null_mut(),
+            None => {
+                eprintln!("Descriptor '{}' not found", name_str);
+                return std::ptr::null_mut();
+            }
         },
-        Err(_) => return std::ptr::null_mut(),
+        Err(err) => {
+            eprintln!("Descriptor didn't parse: {}", err);
+            return std::ptr::null_mut();
+        }
     };
 
     let mutator = Mutator::new(descriptor, Box::leak(Box::new(parser)));
@@ -94,7 +100,7 @@ pub extern "C" fn btcser_mutator_mutate(
     out: *mut *mut c_uchar,
     out_len: *mut c_uint,
 ) {
-    if mutator.is_null() || data.is_null() || out.is_null() || out_len.is_null() {
+    if mutator.is_null() || data.is_null() || out_len.is_null() {
         unsafe {
             *out = std::ptr::null_mut();
         }
