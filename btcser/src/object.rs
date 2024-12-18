@@ -6,7 +6,7 @@ pub struct SerializedValue<'a> {
     pub field_type: FieldType,
     pub nested_values: Vec<SerializedValue<'a>>,
     pub is_constant: bool,
-    pub length_field_for: Option<u64>,
+    pub length_field_for: Vec<u64>,
 }
 
 impl<'a> SerializedValue<'a> {
@@ -16,7 +16,7 @@ impl<'a> SerializedValue<'a> {
             field_type,
             nested_values: Vec::new(),
             is_constant: false,
-            length_field_for: None,
+            length_field_for: Vec::new(),
         }
     }
 
@@ -30,7 +30,7 @@ impl<'a> SerializedValue<'a> {
             field_type,
             nested_values: nested,
             is_constant: false,
-            length_field_for: None,
+            length_field_for: Vec::new(),
         }
     }
 
@@ -40,7 +40,7 @@ impl<'a> SerializedValue<'a> {
             field_type,
             nested_values: Vec::new(),
             is_constant: true,
-            length_field_for: None,
+            length_field_for: Vec::new(),
         }
     }
 }
@@ -123,7 +123,7 @@ impl<'p> ObjectParser<'p> {
                 state,
             )?;
             value.is_constant = field.constant_value.is_some();
-            value.length_field_for = field.length_field_for;
+            value.length_field_for = field.length_field_for.clone();
             values.push(value);
             position += consumed;
         }
@@ -459,7 +459,7 @@ impl<'p> ObjectParser<'p> {
                 state,
             )?;
             value.is_constant = field.constant_value.is_some();
-            value.length_field_for = field.length_field_for;
+            value.length_field_for = field.length_field_for.clone();
             nested_values.push(value);
             position += consumed;
         }

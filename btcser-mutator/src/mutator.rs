@@ -327,7 +327,10 @@ fn compare_mutations(a: &PerformedMutation, b: &PerformedMutation) -> std::cmp::
     }
 }
 
-// Helper function to handle length field updates for collections
+// Helper function to handle length field updates for collections.
+//
+// Emits mutations to update the length field as well as mutations to all slices depending on the
+// length field.
 fn handle_length_update<'a, M>(
     field_type: &FieldType,
     new_length: u64,
@@ -364,35 +367,18 @@ where
             }];
 
             // If this vector is a length field for a slice, add an Add/Delete mutation for the slice
-            if let Some(slice_idx) = value.length_field_for {
-                let mut slice_path = mutation_path.clone();
-                slice_path.indices.pop();
-                slice_path.indices.push(slice_idx as usize);
-
-                let old_length = value.nested_values.len();
-                let mut new_element = vec![];
-                let slice_mutation = if new_length > old_length as u64 {
-                    let slice_value = find_value_in_object(values, &slice_path)
-                        .ok_or_else(|| "Could not find slice for vec length field!".to_string())?;
-
-                    let slice_type = match &slice_value.field_type {
-                        FieldType::Slice(inner_type, _) => &**inner_type,
-                        _ => unreachable!(),
-                    };
-
-                    new_element = mutator.generate(slice_type, parser)?;
-
-                    Mutation::Add
-                } else {
-                    Mutation::Delete
-                };
-
-                mutations.push(PerformedMutation {
-                    mutation: slice_mutation,
-                    path: slice_path,
-                    mutated_bytes: new_element, // Include the generated element bytes
-                });
-            }
+            mutations.extend(
+                handle_slice_length_field_updates(
+                    value,
+                    &mutation_path,
+                    new_length,
+                    values,
+                    mutator,
+                    parser,
+                    None,
+                )?
+                .drain(..),
+            );
 
             Ok(mutations)
         }
@@ -401,17 +387,89 @@ where
             if let Some(length_field) = additional_value {
                 let new_length_bytes =
                     mutator.fixup_length_field(length_field, new_length, parser)?;
-                Ok(vec![PerformedMutation {
+
+                let additional_path =
+                    additional_path.expect("path has to be Some if additional_value is Some");
+
+                let mut mutations = vec![PerformedMutation {
                     mutation: Mutation::Mutate,
-                    path: additional_path.unwrap(),
+                    path: additional_path.clone(),
                     mutated_bytes: new_length_bytes,
-                }])
+                }];
+
+                mutations.extend(
+                    handle_slice_length_field_updates(
+                        length_field,
+                        &additional_path,
+                        new_length,
+                        values,
+                        mutator,
+                        parser,
+                        // Path to the slice triggering this length update
+                        Some(mutation_path.clone()),
+                    )?
+                    .drain(..),
+                );
+
+                Ok(mutations)
             } else {
                 Ok(vec![])
             }
         }
         _ => unreachable!(),
     }
+}
+
+fn handle_slice_length_field_updates<'a, M>(
+    value: &SerializedValue,
+    mutation_path: &FieldPath,
+    new_length: u64,
+    values: &[SerializedValue<'a>],
+    mutator: &M,
+    parser: &DescriptorParser,
+    skip: Option<FieldPath>,
+) -> Result<Vec<PerformedMutation>, String>
+where
+    M: SerializedValueMutator<'a>,
+{
+    let mut slice_mutations = Vec::new();
+
+    for slice_idx in value.length_field_for.iter() {
+        let mut slice_path = mutation_path.clone();
+        slice_path.indices.pop();
+        slice_path.indices.push(*slice_idx as usize);
+
+        if skip.as_ref().map(|s| s == &slice_path).unwrap_or(false) {
+            // Skip the update for this slice
+            continue;
+        }
+
+        let old_length = value.nested_values.len();
+        let mut new_element = vec![];
+        let slice_mutation = if new_length > old_length as u64 {
+            let slice_value = find_value_in_object(values, &slice_path)
+                .ok_or_else(|| "Could not find slice for vec length field!".to_string())?;
+
+            let slice_type = match &slice_value.field_type {
+                FieldType::Slice(inner_type, _) => &**inner_type,
+                _ => unreachable!(),
+            };
+
+            new_element = mutator.generate(slice_type, parser)?;
+
+            Mutation::Add
+        } else {
+            Mutation::Delete
+        };
+
+        slice_mutations.push(PerformedMutation {
+            mutation: slice_mutation,
+            path: slice_path,
+            mutated_bytes: new_element,
+        });
+    }
+
+    Ok(slice_mutations)
 }
 
 // Take a parsed binary object (i.e. list of `SerializedValue`s) and apply a mutation. Returns
@@ -679,7 +737,7 @@ impl<'p> Mutator<'p> {
             // Sample potential mutations for this value
             match &value.field_type {
                 FieldType::Bool => {
-                    if value.length_field_for.is_none() {
+                    if value.length_field_for.is_empty() {
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
@@ -701,7 +759,7 @@ impl<'p> Mutator<'p> {
                 }
                 FieldType::Int(_) => {
                     // Skip mutation if this is a length field
-                    if value.length_field_for.is_none() {
+                    if value.length_field_for.is_empty() {
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Copy(None),
@@ -741,7 +799,7 @@ impl<'p> Mutator<'p> {
                     );
                 }
                 FieldType::Vec(inner_type) => {
-                    if value.length_field_for.is_none() {
+                    if value.length_field_for.is_empty() {
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Copy(None),
@@ -753,7 +811,7 @@ impl<'p> Mutator<'p> {
                     }
 
                     if matches!(**inner_type, FieldType::Int(IntType::U8)) {
-                        if value.length_field_for.is_none() {
+                        if value.length_field_for.is_empty() {
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Mutate,
@@ -2143,6 +2201,76 @@ mod tests {
                 ],
                 "copy slice of u8s",
             ),
+            (
+                // Multiple slices referencing the same length field
+                r#"Test {
+                    vec<u16>,           # vector of u16s (length field)
+                    slice<u16, '0'>,    # first slice referencing vec
+                    slice<u16, '0'>     # second slice referencing vec
+                }"#,
+                vec![
+                    0x02, // vec length = 2
+                    0x34, 0x12, // vec u16 #1
+                    0x78, 0x56, // vec u16 #2
+                    0x34, 0x12, // first slice u16 #1
+                    0x78, 0x56, // first slice u16 #2
+                    0x34, 0x12, // second slice u16 #1
+                    0x78, 0x56, // second slice u16 #2
+                ],
+                SampledMutation {
+                    mutation: Mutation::Add,
+                    path: FieldPath::new(vec![0]), // Add to vector
+                    additional_path: None,
+                },
+                vec![
+                    0x03, // vec length now 3
+                    0x34, 0x12, // original vec u16 #1
+                    0x78, 0x56, // original vec u16 #2
+                    0x00, 0x00, // new vec u16 #3
+                    0x34, 0x12, // first slice u16 #1
+                    0x78, 0x56, // first slice u16 #2
+                    0x00, 0x00, // first slice u16 #3 (added)
+                    0x34, 0x12, // second slice u16 #1
+                    0x78, 0x56, // second slice u16 #2
+                    0x00, 0x00, // second slice u16 #3 (added)
+                ],
+                "multiple slices with same length field",
+            ),
+            (
+                // Add element to one slice when multiple slices share length field
+                r#"Test {
+                    vec<u16>,           # vector of u16s (length field)
+                    slice<u16, '0'>,    # first slice referencing vec
+                    slice<u16, '0'>     # second slice referencing vec
+                }"#,
+                vec![
+                    0x02, // vec length = 2
+                    0x34, 0x12, // vec u16 #1
+                    0x78, 0x56, // vec u16 #2
+                    0x34, 0x12, // first slice u16 #1
+                    0x78, 0x56, // first slice u16 #2
+                    0x34, 0x12, // second slice u16 #1
+                    0x78, 0x56, // second slice u16 #2
+                ],
+                SampledMutation {
+                    mutation: Mutation::Add,
+                    path: FieldPath::new(vec![1]), // Add to first slice
+                    additional_path: Some(FieldPath::new(vec![0])), // Reference to length field
+                },
+                vec![
+                    0x03, // vec length now 3
+                    0x34, 0x12, // vec u16 #1
+                    0x78, 0x56, // vec u16 #2
+                    0x00, 0x00, // vec u16 #3 (added)
+                    0x34, 0x12, // first slice u16 #1
+                    0x78, 0x56, // first slice u16 #2
+                    0x00, 0x00, // first slice u16 #3 (added)
+                    0x34, 0x12, // second slice u16 #1
+                    0x78, 0x56, // second slice u16 #2
+                    0x00, 0x00, // second slice u16 #3 (added)
+                ],
+                "add to slice with shared length field",
+            ),
         ];
 
         // Run all test cases
@@ -2164,6 +2292,8 @@ mod tests {
 
             // Apply the mutation
             let performed_mutations = mutate(&values, mutation, &mutator, &parser).unwrap();
+
+            println!("{:#?}", performed_mutations);
             let final_bytes =
                 finalize_mutations(&initial_data, &values, performed_mutations).unwrap();
 

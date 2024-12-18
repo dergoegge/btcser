@@ -41,7 +41,7 @@ pub struct Field {
     pub name: String,
     pub field_type: FieldType,
     pub constant_value: Option<Vec<u8>>,
-    pub length_field_for: Option<u64>,
+    pub length_field_for: Vec<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
@@ -184,7 +184,7 @@ impl DescriptorParser {
                         length_idx
                     )));
                 }
-                fields[idx].length_field_for = Some(i as u64);
+                fields[idx].length_field_for.push(i as u64);
             }
         }
 
@@ -226,7 +226,7 @@ impl DescriptorParser {
                 name: type_name,
                 field_type,
                 constant_value,
-                length_field_for: None,
+                length_field_for: Vec::new(),
             },
             pos,
         ))
@@ -530,7 +530,7 @@ mod tests {
         assert_eq!(msg.fields.len(), 2);
 
         // Verify length field relationship
-        assert_eq!(msg.fields[0].length_field_for, Some(1));
+        assert_eq!(msg.fields[0].length_field_for, vec![1]);
 
         if let FieldType::Slice(inner, length_field) = &msg.fields[1].field_type {
             assert!(matches!(&**inner, FieldType::Int(IntType::U8)));
@@ -542,7 +542,7 @@ mod tests {
         // Test slice with vec length field
         let msg = parse_single_message("Test { vec<u8>, slice<u16, '0'> }")?;
         assert_eq!(msg.fields.len(), 2);
-        assert_eq!(msg.fields[0].length_field_for, Some(1));
+        assert_eq!(msg.fields[0].length_field_for, vec![1]);
 
         if let FieldType::Slice(inner, length_field) = &msg.fields[1].field_type {
             assert!(matches!(&**inner, FieldType::Int(IntType::U16)));
@@ -554,7 +554,7 @@ mod tests {
         // Test slice with bytes length field
         let msg = parse_single_message("Test { bytes<4>, slice<u8, '0'> }")?;
         assert_eq!(msg.fields.len(), 2);
-        assert_eq!(msg.fields[0].length_field_for, Some(1));
+        assert_eq!(msg.fields[0].length_field_for, vec![1]);
 
         if let FieldType::Slice(inner, length_field) = &msg.fields[1].field_type {
             assert!(matches!(&**inner, FieldType::Int(IntType::U8)));
