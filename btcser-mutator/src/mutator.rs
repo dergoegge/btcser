@@ -667,6 +667,11 @@ impl<'p> Mutator<'p> {
 
         // For each value at the current level
         for (idx, value) in values.iter().enumerate() {
+            if value.is_constant {
+                // Don't mutate constants
+                continue;
+            }
+
             let mut path = current_path.clone();
             path.push(idx);
             let field_path = FieldPath::new(path.clone());

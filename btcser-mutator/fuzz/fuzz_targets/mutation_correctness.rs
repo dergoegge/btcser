@@ -49,7 +49,7 @@ fuzz_target!(|data: &[u8]| {
                 u8,                         # Length field
                 slice<ComplexInner, '0'>,   # Slice of complex structs
                 vec<U16>,                   # Big-endian integers
-                bytes<4>,                   # Fixed bytes
+                bytes<4>(0xdeadbeef),       # Fixed bytes
                 TinyStruct                  # Empty struct edge case
             }
 
