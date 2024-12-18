@@ -9,13 +9,25 @@ use btcser::{
 
 use crate::sampler::WeightedReservoirSampler;
 
+/// `Mutation` enumerates all possible types of mutations that can be performed on a btcser object.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mutation {
+    /// Add a new element to a vector or slice.
     Add,
+    /// Delete an element from a vector or slice.
     Delete,
+    /// Mutate an element (e.g. flip a boolean, mutate an integer, etc.).
     Mutate,
-    Copy(Option<Vec<u8>>), // Overwrite the value of one field with that of another
-    Clone(Option<Vec<u8>>), // Create a new field by copying the value of another
+    /// Overwrite the value of one field with that of another.
+    ///
+    /// May contain the bytes to be copied.
+    Copy(Option<Vec<u8>>),
+    /// Create a new field by copying the value of another. Essentially equivalent to the `Add`
+    /// mutation, except that the new field is copied from an existing field instead of being
+    /// generated from scratch.
+    ///
+    /// May contain the bytes to be cloned.
+    Clone(Option<Vec<u8>>),
 }
 
 #[derive(Debug, Clone)]
@@ -31,9 +43,13 @@ pub struct SampledMutation {
     additional_path: Option<FieldPath>,
 }
 
+/// A trait for a generic byte-array mutator.
 pub trait ByteArrayMutator {
+    /// Constructs a new `ByteArrayMutator` with the given seed.
     fn new(seed: u64) -> Self;
+    /// Mutates the given vector of bytes, may change the length of the vector.
     fn mutate(&self, bytes: &mut Vec<u8>);
+    /// Mutates the given byte slice in place (i.e. the slice length is preserved).
     fn mutate_in_place(&self, bytes: &mut [u8]);
 }
 
@@ -472,8 +488,15 @@ where
     Ok(slice_mutations)
 }
 
-// Take a parsed binary object (i.e. list of `SerializedValue`s) and apply a mutation. Returns
-// locations and mutated bytes for those locations.
+// Take a parsed binary object (i.e. list of `SerializedValue`s) and apply a mutation. Returns a
+// list of mutations that were performed.
+//
+// Note: any given sampled mutation is potentially split up into multiple performed mutations, to
+// accomodate for required changes in different parts of the object.
+//
+// For example, if a `Add` mutation is sampled for a slice, then the mutation will be split up
+// into a `Mutate` mutation for the slice's length field, and an `Add` mutation for the slice's
+// element.
 fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
     values: &'b [SerializedValue<'b>],
     mutation: SampledMutation,
@@ -706,12 +729,29 @@ fn finalize_mutations<'a>(
     Ok(serialized)
 }
 
+/// A mutator for btcser objects.
+///
+/// Provides functionality for performing mutations on btcser objects:
+/// - [`Mutator::mutate`]: Mutates a given btcser object
+/// - [`Mutator::cross_over`]: Performs a cross-over mutation given two btcser objects
+///
+/// Mutations will never violate the serialization format of the specified descriptor.
 pub struct Mutator<'p> {
     descriptor: Descriptor,
     parser: &'p DescriptorParser,
 }
 
 impl<'p> Mutator<'p> {
+    // Sample all possible mutations for a given set of parsed values.
+    //
+    // A [`WeightedReservoirSampler`] is used to efficiently sample mutations without having to
+    // store all possible mutations in memory. This approach is inspired by
+    // [libprotobuf-mutator](https://github.com/google/libprotobuf-mutator), which employs the same
+    // technique.
+    //
+    // This is used for both the `mutate` & `cross_over` methods. If the `cross_over` flag is true,
+    // then only cross-over mutations will be sampled. Otherwise, only "regular" non-cross-over
+    // mutations will be sampled.
     fn sample_mutations<'a, S>(
         &self,
         values: &'a [SerializedValue<'a>],
@@ -721,6 +761,8 @@ impl<'p> Mutator<'p> {
     ) where
         S: WeightedReservoirSampler<SampledMutation>,
     {
+        // Determine the weights for cross-over & non-cross-over mutations. 0.0 is equivalent to not
+        // sampling the mutation.
         let (cross_over_weight, mutate_weight) = if cross_over { (1.0, 0.0) } else { (0.0, 1.0) };
 
         // For each value at the current level
@@ -737,7 +779,9 @@ impl<'p> Mutator<'p> {
             // Sample potential mutations for this value
             match &value.field_type {
                 FieldType::Bool => {
+                    // Only sample mutations for boolean fields that are not length fields.
                     if value.length_field_for.is_empty() {
+                        // Sample "flip" mutation for boolean fields. I.e. value = !value.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
@@ -747,6 +791,12 @@ impl<'p> Mutator<'p> {
                             mutate_weight,
                         );
 
+                        // Sample the `Copy` mutation for boolean fields. I.e. take the value of
+                        // another boolean and replace the value of this boolean with it.
+                        //
+                        // TODO: this doesn't seem more useful than the flip mutation, in fact it
+                        // could result in the same value being copied, so it might actually even
+                        // be worse.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Copy(None),
@@ -758,8 +808,10 @@ impl<'p> Mutator<'p> {
                     }
                 }
                 FieldType::Int(_) => {
-                    // Skip mutation if this is a length field
+                    // Only sample mutations for integer fields that are not length fields.
                     if value.length_field_for.is_empty() {
+                        // Sample the `Copy` mutation for integer fields. I.e. take the value of
+                        // another integer and replace the value of this integer with it.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Copy(None),
@@ -769,6 +821,8 @@ impl<'p> Mutator<'p> {
                             cross_over_weight,
                         );
 
+                        // Sample the `Mutate` mutation for integer fields. I.e. mutate the value
+                        // of this integer.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
@@ -780,6 +834,8 @@ impl<'p> Mutator<'p> {
                     }
                 }
                 FieldType::Bytes(_) => {
+                    // Sample the `Copy` mutation for bytes fields. I.e. take the value of another
+                    // fixed-size byte array and replace the value of this byte array with it.
                     sampler.add(
                         SampledMutation {
                             mutation: Mutation::Copy(None),
@@ -789,6 +845,8 @@ impl<'p> Mutator<'p> {
                         cross_over_weight,
                     );
 
+                    // Sample the `Mutate` mutation for fixed-size byte arrays. I.e. mutate the
+                    // value of this byte array (without affecting its length).
                     sampler.add(
                         SampledMutation {
                             mutation: Mutation::Mutate,
@@ -800,6 +858,11 @@ impl<'p> Mutator<'p> {
                 }
                 FieldType::Vec(inner_type) => {
                     if value.length_field_for.is_empty() {
+                        // Sample the `Copy` mutation for vectors. I.e. take the value of another
+                        // vector (of the same type) and replace the value of this vector with it.
+                        //
+                        // Note: only sample the `Copy` mutation if the vector is not a length
+                        // field.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Copy(None),
@@ -811,6 +874,9 @@ impl<'p> Mutator<'p> {
                     }
 
                     if matches!(**inner_type, FieldType::Int(IntType::U8)) {
+                        // Special case for non-length field vectors holding bytes: sample the
+                        // `Mutate` mutation. I.e. mutate the vector as if it were a byte array,
+                        // arbitrary length changes are possible.
                         if value.length_field_for.is_empty() {
                             sampler.add(
                                 SampledMutation {
@@ -822,6 +888,8 @@ impl<'p> Mutator<'p> {
                             );
                         }
                     } else {
+                        // Sample the `Clone` mutation for vectors. I.e. take the value of another
+                        // vectors' element (of compatible type) and add it to this vector.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Clone(None),
@@ -830,6 +898,9 @@ impl<'p> Mutator<'p> {
                             },
                             cross_over_weight,
                         );
+
+                        // Sample the `Add` mutation for vectors. I.e. add an element to the end of
+                        // this vector (generated from scratch).
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Add,
@@ -840,6 +911,8 @@ impl<'p> Mutator<'p> {
                         );
 
                         if !value.nested_values.is_empty() {
+                            // If the vector is not empty, sample the `Delete` mutation. I.e.
+                            // remove the last element of this vector.
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Delete,
@@ -850,10 +923,12 @@ impl<'p> Mutator<'p> {
                             );
                         }
 
+                        // Recursively sample mutations for the vector's elements.
                         self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                     }
                 }
                 FieldType::Slice(inner_type, idx) => {
+                    // Path to the length field of the slice.
                     let mut additional_path = field_path.clone();
                     additional_path.indices.pop();
                     additional_path.indices.push(*idx as usize);
@@ -874,6 +949,8 @@ impl<'p> Mutator<'p> {
                             cross_over_weight,
                         );
 
+                        // Sample the `Mutate` mutation for byte slices. I.e. mutate the bytes of
+                        // this slice, arbitrary length changes are possible.
                         sampler.add(
                             SampledMutation {
                                 mutation: Mutation::Mutate,
@@ -883,13 +960,20 @@ impl<'p> Mutator<'p> {
                             mutate_weight,
                         );
                     } else {
-                        // For boolean length fields, only allow Add if the slice is empty
+                        // For boolean length fields, only allow Add if the slice is empty.
+                        //
+                        // Boolean length fields essentialy encode optional fields, i.e.
+                        // "bool,slice<T, '0'>" represent either "[0x0]" or "[0x01,<one slice element>]"
+                        //
+                        // This is why we only allow the `Add` mutation if the slice is empty.
                         let should_allow_add = match &length_field.field_type {
                             FieldType::Bool => value.nested_values.is_empty(),
                             _ => true,
                         };
 
                         if should_allow_add {
+                            // Sample the `Clone` mutation for slices. I.e. take the value of another
+                            // slice's element (of compatible type) and add it to this slice.
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Clone(None),
@@ -899,6 +983,8 @@ impl<'p> Mutator<'p> {
                                 cross_over_weight,
                             );
 
+                            // Sample the `Add` mutation for slices. I.e. add an element to the end
+                            // of this slice (generated from scratch).
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Add,
@@ -910,6 +996,8 @@ impl<'p> Mutator<'p> {
                         }
 
                         if !value.nested_values.is_empty() {
+                            // If the slice is not empty, sample the `Delete` mutation. I.e.
+                            // remove the last element of this slice.
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Delete,
@@ -920,10 +1008,13 @@ impl<'p> Mutator<'p> {
                             );
                         }
 
+                        // Recursively sample mutations for the slice's elements.
                         self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                     }
                 }
                 FieldType::Struct(_) => {
+                    // Sample the `Copy` mutation for structs. I.e. take the value of another struct
+                    // (same type) and replace the value of this struct with it.
                     sampler.add(
                         SampledMutation {
                             mutation: Mutation::Copy(None),
@@ -933,12 +1024,17 @@ impl<'p> Mutator<'p> {
                         cross_over_weight,
                     );
 
+                    // Recursively sample mutations for the struct's fields.
                     self.sample_mutations(&value.nested_values, sampler, path, cross_over);
                 }
             }
         }
     }
 
+    // Samples all possible data sources for a given field type.
+    //
+    // This is used for the `Clone` & `Copy` mutations, where we need to sample all possible values
+    // of the target field type.
     fn sample_data_sources<'a, S>(
         &self,
         values: &'a [SerializedValue<'a>],
@@ -981,6 +1077,9 @@ impl<'p> Mutator<'p> {
     /// # Returns
     /// * `Ok(Vec<u8>)` - The mutated bytes
     /// * `Err(String)` - An error message if mutation fails
+    ///
+    /// Note: if parsing the given data fails, a dummy value will be generated using the
+    /// descriptor.
     pub fn mutate<'b, S, M>(&self, data: &'b [u8], seed: u64) -> Result<Vec<u8>, String>
     where
         S: WeightedReservoirSampler<SampledMutation>,
@@ -1015,6 +1114,21 @@ impl<'p> Mutator<'p> {
         finalize_mutations(data, &values, performed)
     }
 
+    /// Performs a cross-over mutation given two btcser objects.
+    ///
+    /// # Arguments
+    /// * `to_mutate` - The object to mutate
+    /// * `sample_from` - The object to sample to be copied or cloned values from
+    /// * `seed` - A seed value for deterministic mutation sampling
+    ///
+    /// # Type Parameters
+    /// * `S` - A type implementing `WeightedReservoirSampler<SampledMutation>`
+    /// * `D` - A type implementing `WeightedReservoirSampler<FieldPath>`
+    /// * `M` - A type implementing `SerializedValueMutator`
+    ///
+    /// # Returns
+    /// * `Ok(Vec<u8>)` - The mutated bytes
+    /// * `Err(String)` - An error message if cross-over fails
     pub fn cross_over<'b, S, D, M>(
         &self,
         to_mutate: &'b [u8],
