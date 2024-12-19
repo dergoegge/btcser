@@ -33,16 +33,6 @@ impl<'a> SerializedValue<'a> {
             length_field_for: Vec::new(),
         }
     }
-
-    pub fn new_constant(bytes: &'a [u8], field_type: FieldType) -> Self {
-        Self {
-            bytes,
-            field_type,
-            nested_values: Vec::new(),
-            is_constant: true,
-            length_field_for: Vec::new(),
-        }
-    }
 }
 
 pub fn find_value_in_object<'a>(
