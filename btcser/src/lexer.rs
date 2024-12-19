@@ -204,44 +204,125 @@ mod tests {
     }
 
     #[test]
-    fn test_basic_tokens() -> Result<(), String> {
-        let tokens = tokenize("Message { u32 }").unwrap();
-        assert_eq!(
-            tokens,
-            vec![
-                Token::Identifier("Message".to_string()),
-                Token::OpenBrace,
-                Token::Identifier("u32".to_string()),
-                Token::CloseBrace,
-            ]
-        );
-        Ok(())
-    }
+    fn test_lexer_cases() -> Result<(), String> {
+        let test_cases = vec![
+            (
+                "basic message definition",
+                "Message { u32 }",
+                vec![
+                    Token::Identifier("Message".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("u32".to_string()),
+                    Token::CloseBrace,
+                ],
+            ),
+            (
+                "complex type expressions",
+                "Test { vec<u8>, slice<u16, '0'>, bytes<2>(0xff) }",
+                vec![
+                    Token::Identifier("Test".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("vec".to_string()),
+                    Token::OpenAngle,
+                    Token::Identifier("u8".to_string()),
+                    Token::CloseAngle,
+                    Token::Comma,
+                    Token::Identifier("slice".to_string()),
+                    Token::OpenAngle,
+                    Token::Identifier("u16".to_string()),
+                    Token::Comma,
+                    Token::Quote,
+                    Token::Number(0),
+                    Token::Quote,
+                    Token::CloseAngle,
+                    Token::Comma,
+                    Token::Identifier("bytes".to_string()),
+                    Token::OpenAngle,
+                    Token::Number(2),
+                    Token::CloseAngle,
+                    Token::OpenParen,
+                    Token::HexConstant(vec![0xff]),
+                    Token::CloseParen,
+                    Token::CloseBrace,
+                ],
+            ),
+            (
+                "hex constants",
+                "Test { u8(0xff) }",
+                vec![
+                    Token::Identifier("Test".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("u8".to_string()),
+                    Token::OpenParen,
+                    Token::HexConstant(vec![0xff]),
+                    Token::CloseParen,
+                    Token::CloseBrace,
+                ],
+            ),
+            (
+                "comments",
+                "# This is a comment\nTest { u8 } # inline comment",
+                vec![
+                    Token::Comment(" This is a comment".to_string()),
+                    Token::Identifier("Test".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("u8".to_string()),
+                    Token::CloseBrace,
+                    Token::Comment(" inline comment".to_string()),
+                ],
+            ),
+            ("empty input", "", vec![]),
+            ("whitespace only", "   \n\t   \r\n", vec![]),
+            (
+                "multiple consecutive comments",
+                "# Comment 1\n# Comment 2\nTest",
+                vec![
+                    Token::Comment(" Comment 1".to_string()),
+                    Token::Comment(" Comment 2".to_string()),
+                    Token::Identifier("Test".to_string()),
+                ],
+            ),
+            (
+                "numbers at identifier boundaries",
+                "u32_type123 456",
+                vec![
+                    Token::Identifier("u32_type123".to_string()),
+                    Token::Number(456),
+                ],
+            ),
+            (
+                "odd-length hex constant",
+                "Test { u8(0x0) }",
+                vec![
+                    Token::Identifier("Test".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("u8".to_string()),
+                    Token::OpenParen,
+                    Token::HexConstant(vec![0]),
+                    Token::CloseParen,
+                    Token::CloseBrace,
+                ],
+            ),
+            (
+                "multiple hex bytes",
+                "Test { bytes(0xdeadbeef) }",
+                vec![
+                    Token::Identifier("Test".to_string()),
+                    Token::OpenBrace,
+                    Token::Identifier("bytes".to_string()),
+                    Token::OpenParen,
+                    Token::HexConstant(vec![0xde, 0xad, 0xbe, 0xef]),
+                    Token::CloseParen,
+                    Token::CloseBrace,
+                ],
+            ),
+        ];
 
-    #[test]
-    fn test_complex_tokens() -> Result<(), String> {
-        let tokens = tokenize("Test { vec<u8>, slice<u16, '0'>, bytes<2>(0xff) }").unwrap();
-        assert!(tokens.len() > 0);
-        Ok(())
-    }
+        for (test_name, input, expected_tokens) in test_cases {
+            let tokens = tokenize(input)?;
+            assert_eq!(tokens, expected_tokens, "Failed test case: {}", test_name);
+        }
 
-    #[test]
-    fn test_hex_constants() -> Result<(), String> {
-        let tokens = tokenize("Test { u8(0xff) }").unwrap();
-        assert!(matches!(
-            tokens[4],
-            Token::HexConstant(ref v) if v == &vec![0xff]
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn test_comments() -> Result<(), String> {
-        let tokens = tokenize("# This is a comment\nTest { u8 } # inline comment").unwrap();
-        assert!(matches!(
-            tokens[0],
-            Token::Comment(ref s) if s.trim() == "This is a comment"
-        ));
         Ok(())
     }
 }
