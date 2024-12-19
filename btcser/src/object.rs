@@ -1484,4 +1484,167 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_parse_extra_data() {
+        let mut parser = DescriptorParser::new();
+        let descriptor = parse_descriptor_with_parser("Test { u8 }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+
+        // Test data with extra bytes at the end
+        let data = [0x42, 0xff, 0xff]; // Only first byte should be parsed
+        assert!(obj_parser.parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_truncated_data() {
+        let mut parser = DescriptorParser::new();
+
+        // Test bool truncation
+        let descriptor = parse_descriptor_with_parser("Test { bool }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+        assert!(obj_parser.parse(&[]).is_err());
+
+        // Test u256 truncation
+        let descriptor = parse_descriptor_with_parser("Test { u256 }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+        let short_data = [0u8; 31]; // Only 31 bytes instead of required 32
+        assert!(obj_parser.parse(&short_data).is_err());
+
+        // Test slice truncation
+        let descriptor =
+            parse_descriptor_with_parser("Test { u8, slice<u8, '0'> }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+        let data = [0x02, 0x42]; // Promises 2 bytes but only has 1
+        assert!(obj_parser.parse(&data).is_err());
+
+        // Test vec truncation
+        let descriptor = parse_descriptor_with_parser("Test { vec<u8> }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+        let data = [0x02, 0x42]; // Promises 2 elements but only has 1
+        assert!(obj_parser.parse(&data).is_err());
+    }
+
+    #[test]
+    fn test_parse_u256() -> Result<(), String> {
+        let mut parser = DescriptorParser::new();
+        let descriptor = parse_descriptor_with_parser("Test { u256, U256 }", &mut parser).unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+
+        let mut data = [0u8; 64]; // 32 bytes for each u256
+        data[0] = 0x42; // Set LSB for LE
+        data[31] = 0x43; // Set MSB for LE
+        data[32] = 0x44; // Set MSB for BE
+        data[63] = 0x45; // Set LSB for BE
+
+        let values = obj_parser.parse(&data)?;
+        assert_eq!(values.len(), 2);
+        assert_eq!(values[0].bytes[0], 0x42); // Check LE byte order
+        assert_eq!(values[0].bytes[31], 0x43);
+        assert_eq!(values[1].bytes[0], 0x44); // Check BE byte order
+        assert_eq!(values[1].bytes[31], 0x45);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_integers() -> Result<(), String> {
+        let mut parser = DescriptorParser::new();
+        let descriptor = parse_descriptor_with_parser(
+            "Test { 
+                i8, u8,
+                i16, u16, I16, U16,
+                i32, u32, I32, U32,
+                i64, u64, I64, U64
+            }",
+            &mut parser,
+        )
+        .unwrap();
+        let obj_parser = ObjectParser::new(descriptor, &parser);
+
+        // Create test data with various integer values
+        let mut data = Vec::new();
+
+        // i8/u8
+        data.extend_from_slice(&[-42i8 as u8, 42u8]);
+
+        // i16/u16 LE and BE
+        data.extend_from_slice(&(-1000i16).to_le_bytes());
+        data.extend_from_slice(&1000u16.to_le_bytes());
+        data.extend_from_slice(&(-1000i16).to_be_bytes());
+        data.extend_from_slice(&1000u16.to_be_bytes());
+
+        // i32/u32 LE and BE
+        data.extend_from_slice(&(-100000i32).to_le_bytes());
+        data.extend_from_slice(&100000u32.to_le_bytes());
+        data.extend_from_slice(&(-100000i32).to_be_bytes());
+        data.extend_from_slice(&100000u32.to_be_bytes());
+
+        // i64/u64 LE and BE
+        data.extend_from_slice(&(-10000000i64).to_le_bytes());
+        data.extend_from_slice(&10000000u64.to_le_bytes());
+        data.extend_from_slice(&(-10000000i64).to_be_bytes());
+        data.extend_from_slice(&10000000u64.to_be_bytes());
+
+        let values = obj_parser.parse(&data)?;
+        assert_eq!(values.len(), 14);
+
+        // Verify i8/u8
+        assert_eq!(values[0].bytes, &[-42i8 as u8]);
+        assert_eq!(values[1].bytes, &[42u8]);
+
+        // Verify i16/u16
+        assert_eq!(values[2].bytes, &(-1000i16).to_le_bytes());
+        assert_eq!(values[3].bytes, &1000u16.to_le_bytes());
+        assert_eq!(values[4].bytes, &(-1000i16).to_be_bytes());
+        assert_eq!(values[5].bytes, &1000u16.to_be_bytes());
+
+        // Verify i32/u32
+        assert_eq!(values[6].bytes, &(-100000i32).to_le_bytes());
+        assert_eq!(values[7].bytes, &100000u32.to_le_bytes());
+        assert_eq!(values[8].bytes, &(-100000i32).to_be_bytes());
+        assert_eq!(values[9].bytes, &100000u32.to_be_bytes());
+
+        // Verify i64/u64
+        assert_eq!(values[10].bytes, &(-10000000i64).to_le_bytes());
+        assert_eq!(values[11].bytes, &10000000u64.to_le_bytes());
+        assert_eq!(values[12].bytes, &(-10000000i64).to_be_bytes());
+        assert_eq!(values[13].bytes, &10000000u64.to_be_bytes());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_parse_varint_edge_cases() -> Result<(), String> {
+        // Test edge cases for varint parsing
+        let test_cases = vec![
+            // (input_bytes, expected_result)
+            (vec![0x00], Ok((0, 1))),              // Minimum value
+            (vec![0x7F], Ok((127, 1))),            // Max single byte
+            (vec![0x80, 0x00], Ok((128, 2))),      // Min two bytes
+            (vec![0xFF, 0x7F], Ok((16511, 2))),    // Max two bytes
+            (vec![0x80], Err("Truncated VarInt")), // Incomplete
+            (vec![0x80, 0x80], Err("Truncated VarInt")), // Still incomplete
+                                                   // Add more edge cases as needed
+        ];
+
+        for (input, expected) in test_cases {
+            let result = decode_varint(&input);
+            match (result, expected) {
+                (Ok(actual), Ok(expected)) => {
+                    assert_eq!(actual, expected, "Mismatch for input: {:?}", input);
+                }
+                (Err(actual_err), Err(expected_err)) => {
+                    assert_eq!(
+                        actual_err, expected_err,
+                        "Error mismatch for input: {:?}",
+                        input
+                    );
+                }
+                _ => panic!("Result mismatch for input: {:?}", input),
+            }
+        }
+
+        Ok(())
+    }
 }
