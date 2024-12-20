@@ -237,9 +237,6 @@ impl<'p> ObjectParser<'p> {
         if data.is_empty() {
             return Err("Unexpected end of input".to_string());
         }
-        if data[0] > 1 {
-            return Err("Invalid boolean value".to_string());
-        }
         Ok((SerializedValue::new(&data[..1], FieldType::Bool), 1))
     }
 

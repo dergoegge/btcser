@@ -63,7 +63,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
             // For booleans, just flip the value
             FieldType::Bool => {
                 let mut bytes = vec![value.bytes[0]];
-                bytes[0] ^= 1; // Flip the least significant bit
+                bytes[0] = (bytes[0] < 1) as u8; // Flip the boolean
                 Ok(bytes)
             }
 

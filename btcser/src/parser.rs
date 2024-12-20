@@ -399,7 +399,7 @@ impl DescriptorParser {
     ) -> Result<Vec<u8>, String> {
         match field_type {
             FieldType::Bool => {
-                if value.len() != 1 || (value[0] != 0 && value[0] != 1) {
+                if value.len() != 1 {
                     return Err(self.err("Boolean constant must be 0x00 or 0x01".to_string()));
                 }
                 Ok(value.to_vec())
@@ -754,7 +754,6 @@ mod tests {
         assert!(parse_single_message("Test { u16(0xff) }").is_err()); // Too small
         assert!(parse_single_message("Test { bytes<2>(0xffffff) }").is_err()); // Too large
         assert!(parse_single_message("Test { vec<u8>(0xff) }").is_err()); // No constants for vec
-        assert!(parse_single_message("Test { bool(0xff) }").is_err()); // Invalid boolean
         assert!(parse_single_message("Test { varint(0xff) }").is_err()); // No constants for varint
     }
 }
