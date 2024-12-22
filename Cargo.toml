@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "btcser",
+    "btcser-cmd",
     "btcser-mutator",
     "btcser-mutator/fuzz"
 ] 

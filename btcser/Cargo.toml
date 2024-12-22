@@ -4,16 +4,5 @@ version = "0.1.0"
 edition = "2021"
 
 [features]
-debug = []  # Empty feature flag for debug functionality
 
 [dependencies]
-rand = "0.8.5"
-hex = "0.4"
-
-[[bin]]
-name = "parser"
-path = "src/bin/parser.rs"
-
-[[bin]]
-name = "obj-parser"
-path = "src/bin/obj-parser.rs"

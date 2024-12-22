@@ -1,0 +1,11 @@
+[package]
+name = "btcser-cmd"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+clap = { version = "4.3.0", features = ["derive", "string"] }
+rand = "0.8.5"
+hex = "0.4"
+btcser = { path = "../btcser" }
+btcser-mutator = { path = "../btcser-mutator" }
