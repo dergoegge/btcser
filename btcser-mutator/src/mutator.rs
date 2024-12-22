@@ -761,9 +761,9 @@ impl<'p> Mutator<'p> {
     ) where
         S: WeightedReservoirSampler<SampledMutation>,
     {
-        // Determine the weights for cross-over & non-cross-over mutations. 0.0 is equivalent to not
+        // Determine the weights for cross-over & non-cross-over mutations. 0 is equivalent to not
         // sampling the mutation.
-        let (cross_over_weight, mutate_weight) = if cross_over { (1.0, 0.0) } else { (0.0, 1.0) };
+        let (cross_over_weight, mutate_weight) = if cross_over { (1, 0) } else { (0, 1) };
 
         // For each value at the current level
         for (idx, value) in values.iter().enumerate() {
@@ -1051,7 +1051,7 @@ impl<'p> Mutator<'p> {
 
             // Check if this value's type matches the target field_type
             if value.field_type == *field_type {
-                sampler.add(FieldPath::new(path.clone()), 1.0);
+                sampler.add(FieldPath::new(path.clone()), 1);
             }
 
             // Recursively check nested values

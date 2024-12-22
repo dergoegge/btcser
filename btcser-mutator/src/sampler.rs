@@ -1,12 +1,11 @@
 use rand::rngs::StdRng;
 use rand::{Rng, SeedableRng};
-use std::f64;
 
 pub trait WeightedReservoirSampler<T: Clone> {
     fn new(seed: u64) -> Self
     where
         Self: Sized;
-    fn add(&mut self, item: T, weight: f64);
+    fn add(&mut self, item: T, weight: u64);
     fn get_sample(self) -> Option<T>;
 }
 
@@ -26,12 +25,11 @@ impl<T: Clone> WeightedReservoirSampler<T> for ChaoSampler<T> {
         }
     }
 
-    fn add(&mut self, item: T, weight: f64) {
-        if weight <= 0.0 {
+    fn add(&mut self, item: T, weight: u64) {
+        if weight == 0 {
             return;
         }
 
-        let weight = weight as u64;
         self.total_weight += weight;
 
         if weight == self.total_weight || self.rng.gen_range(1..=self.total_weight) <= weight {
@@ -70,8 +68,8 @@ pub mod tests {
             Self::new(seed)
         }
 
-        fn add(&mut self, item: T, weight: f64) {
-            if weight > 0.0 {
+        fn add(&mut self, item: T, weight: u64) {
+            if weight > 0 {
                 self.samples.push(item);
             }
         }
@@ -89,23 +87,23 @@ pub mod tests {
     #[test]
     fn test_chao_sampler_basic() {
         let mut sampler = ChaoSampler::new(42);
-        sampler.add(1, 1.0);
-        sampler.add(2, 1.0);
-        sampler.add(3, 1.0);
+        sampler.add(1, 1);
+        sampler.add(2, 1);
+        sampler.add(3, 1);
         assert!(sampler.get_sample().is_some());
     }
 
     #[test]
     fn test_chao_sampler_zero_weight() {
         let mut sampler = ChaoSampler::new(42);
-        sampler.add(1, 0.0);
+        sampler.add(1, 0);
         assert!(sampler.get_sample().is_none());
     }
 
     #[test]
     fn test_chao_sampler_single_item() {
         let mut sampler = ChaoSampler::new(42);
-        sampler.add(1, 1.0);
+        sampler.add(1, 1);
         assert_eq!(sampler.get_sample(), Some(1));
     }
 
