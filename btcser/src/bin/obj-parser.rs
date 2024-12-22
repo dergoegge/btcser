@@ -1,5 +1,5 @@
 use btcser::object::{ObjectParser, SerializedValue};
-use btcser::parser::DescriptorParser;
+use btcser::parser::{DescriptorParser, IntType};
 use std::env;
 use std::fs;
 use std::io::{self, Read};
@@ -12,22 +12,42 @@ fn print_serialized_value(value: &SerializedValue, indent: usize, path: &str) {
             println!("{}[{}] {}", indent_str, path, name);
         }
         btcser::parser::FieldType::Vec(inner_type) => {
-            println!(
-                "{}[{}] Vec<{:?}> (length: {})",
-                indent_str,
-                path,
-                inner_type,
-                value.nested_values.len()
-            );
+            if let btcser::parser::FieldType::Int(IntType::U8) = **inner_type {
+                println!(
+                    "{}[{}] Vec<u8>: 0x{}",
+                    indent_str,
+                    path,
+                    hex::encode(&value.bytes)
+                );
+                return;
+            } else {
+                println!(
+                    "{}[{}] Vec<{:?}> (length: {})",
+                    indent_str,
+                    path,
+                    inner_type,
+                    value.nested_values.len()
+                );
+            }
         }
         btcser::parser::FieldType::Slice(inner_type, _) => {
-            println!(
-                "{}[{}] Slice<{:?}> (length: {})",
-                indent_str,
-                path,
-                inner_type,
-                value.nested_values.len()
-            );
+            if let btcser::parser::FieldType::Int(IntType::U8) = **inner_type {
+                println!(
+                    "{}[{}] Slice<u8>: 0x{}",
+                    indent_str,
+                    path,
+                    hex::encode(&value.bytes)
+                );
+                return;
+            } else {
+                println!(
+                    "{}[{}] Slice<{:?}> (length: {})",
+                    indent_str,
+                    path,
+                    inner_type,
+                    value.nested_values.len()
+                );
+            }
         }
         _ => {
             let value_str = match value.field_type {
