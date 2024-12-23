@@ -7,5 +7,8 @@ edition = "2021"
 clap = { version = "4.3.0", features = ["derive", "string"] }
 rand = "0.8.5"
 hex = "0.4"
+libafl = { git = "https://github.com/AFLplusplus/LibAFL.git", tag = "0.14.0" }
+libafl_bolts = { git = "https://github.com/AFLplusplus/LibAFL.git", tag = "0.14.0" }
+
 btcser = { path = "../btcser" }
 btcser-mutator = { path = "../btcser-mutator" }

@@ -8,7 +8,17 @@ use btcser::{
 use btcser_mutator::{sampler::ChaoSampler, ByteArrayMutator, Mutator, StdSerializedValueMutator};
 
 use clap::{Parser, Subcommand};
-use rand::Rng;
+use libafl::mutators::MutatorsTuple;
+use libafl::{
+    corpus::NopCorpus,
+    inputs::{BytesInput, HasMutatorBytes},
+    mutators::{havoc_mutations_no_crossover, HavocMutationsNoCrossoverType},
+    state::{HasRand, StdState},
+};
+use libafl_bolts::{
+    rands::{Rand, StdRand},
+    HasLen,
+};
 
 #[derive(Parser)]
 #[command(
@@ -50,87 +60,42 @@ enum Commands {
 
 // Define SimpleMutator struct
 struct SimpleMutator {
-    rng: rand::rngs::StdRng,
+    state: StdState<BytesInput, NopCorpus<BytesInput>, StdRand, NopCorpus<BytesInput>>,
+    mutator: HavocMutationsNoCrossoverType,
 }
 
 impl ByteArrayMutator for SimpleMutator {
     fn new(seed: u64) -> Self {
-        Self {
-            rng: rand::SeedableRng::seed_from_u64(seed),
-        }
+        let state = StdState::new(
+            StdRand::with_seed(seed),
+            NopCorpus::new(),
+            NopCorpus::new(),
+            &mut (),
+            &mut (),
+        )
+        .unwrap();
+
+        let mutator = havoc_mutations_no_crossover();
+        Self { state, mutator }
     }
 
-    fn mutate(&self, bytes: &mut Vec<u8>) {
-        self.mutate_in_place(bytes);
+    fn mutate(&mut self, bytes: &mut Vec<u8>) {
+        let mut input = BytesInput::from(bytes.clone());
+        let idx = self.state.rand_mut().next() % self.mutator.len() as u64;
+        let _ = self
+            .mutator
+            .get_and_mutate(idx.into(), &mut self.state, &mut input);
+        bytes.clear();
+        bytes.extend(input.bytes());
     }
 
-    fn mutate_in_place(&self, bytes: &mut [u8]) {
-        if bytes.is_empty() {
-            return;
-        }
-
-        // Choose a random mutation strategy
-        match self.rng.clone().gen_range(0..5) {
-            0 => self.bit_flip(bytes),
-            1 => self.byte_flip(bytes),
-            2 => self.random_byte(bytes),
-            3 => self.add_or_subtract(bytes),
-            4 => self.swap_bytes(bytes),
-            _ => unreachable!(),
-        }
-    }
-}
-
-impl SimpleMutator {
-    // Implement mutation strategies
-    fn bit_flip(&self, bytes: &mut [u8]) {
-        let num_mutations = self.rng.clone().gen_range(1..=bytes.len());
-        for _ in 0..num_mutations {
-            let idx = self.rng.clone().gen_range(0..bytes.len());
-            let bit = self.rng.clone().gen_range(0..8);
-            bytes[idx] ^= 1 << bit;
-        }
-    }
-
-    fn byte_flip(&self, bytes: &mut [u8]) {
-        let num_mutations = self.rng.clone().gen_range(1..=bytes.len());
-        for _ in 0..num_mutations {
-            let idx = self.rng.clone().gen_range(0..bytes.len());
-            bytes[idx] ^= 0xFF;
-        }
-    }
-
-    fn random_byte(&self, bytes: &mut [u8]) {
-        let num_mutations = self.rng.clone().gen_range(1..=bytes.len());
-        for _ in 0..num_mutations {
-            let idx = self.rng.clone().gen_range(0..bytes.len());
-            bytes[idx] = self.rng.clone().gen::<u8>();
-        }
-    }
-
-    fn add_or_subtract(&self, bytes: &mut [u8]) {
-        let num_mutations = self.rng.clone().gen_range(1..=bytes.len());
-        for _ in 0..num_mutations {
-            let idx = self.rng.clone().gen_range(0..bytes.len());
-            let delta = self.rng.clone().gen_range(1..=4);
-            if self.rng.clone().gen_bool(0.5) {
-                bytes[idx] = bytes[idx].wrapping_add(delta);
-            } else {
-                bytes[idx] = bytes[idx].wrapping_sub(delta);
-            }
-        }
-    }
-
-    fn swap_bytes(&self, bytes: &mut [u8]) {
-        if bytes.len() < 2 {
-            return;
-        }
-        let num_swaps = self.rng.clone().gen_range(1..=bytes.len() / 2);
-        for _ in 0..num_swaps {
-            let idx1 = self.rng.clone().gen_range(0..bytes.len());
-            let idx2 = self.rng.clone().gen_range(0..bytes.len());
-            bytes.swap(idx1, idx2);
-        }
+    fn mutate_in_place(&mut self, bytes: &mut [u8]) {
+        let mut input = BytesInput::from(bytes.to_vec());
+        let idx = self.state.rand_mut().next() % self.mutator.len() as u64;
+        let _ = self
+            .mutator
+            .get_and_mutate(idx.into(), &mut self.state, &mut input);
+        bytes.copy_from_slice(&input.bytes()[..bytes.len()]);
     }
 }
 

@@ -73,7 +73,7 @@ impl ByteArrayMutator for LibFuzzerByteArrayMutator {
         Self {}
     }
 
-    fn mutate(&self, bytes: &mut Vec<u8>) {
+    fn mutate(&mut self, bytes: &mut Vec<u8>) {
         if bytes.capacity() == 0 {
             bytes.reserve(512);
         }
@@ -84,7 +84,7 @@ impl ByteArrayMutator for LibFuzzerByteArrayMutator {
         bytes.resize(unsafe { LLVMFuzzerMutate(mut_ptr, len, max_len) }, 0);
     }
 
-    fn mutate_in_place(&self, bytes: &mut [u8]) {
+    fn mutate_in_place(&mut self, bytes: &mut [u8]) {
         let len = bytes.len();
         let mut_ptr = bytes.as_mut_ptr();
         unsafe { LLVMFuzzerMutate(mut_ptr, len, len) };

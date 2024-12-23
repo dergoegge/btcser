@@ -11,11 +11,11 @@ impl ByteArrayMutator for TestByteArrayMutator {
     fn new(_seed: u64) -> Self {
         Self {}
     }
-    fn mutate(&self, bytes: &mut Vec<u8>) {
+    fn mutate(&mut self, bytes: &mut Vec<u8>) {
         bytes.fill(0xFF);
     }
 
-    fn mutate_in_place(&self, bytes: &mut [u8]) {
+    fn mutate_in_place(&mut self, bytes: &mut [u8]) {
         bytes.fill(0xFF);
     }
 }

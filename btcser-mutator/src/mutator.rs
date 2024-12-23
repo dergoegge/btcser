@@ -48,9 +48,9 @@ pub trait ByteArrayMutator {
     /// Constructs a new `ByteArrayMutator` with the given seed.
     fn new(seed: u64) -> Self;
     /// Mutates the given vector of bytes, may change the length of the vector.
-    fn mutate(&self, bytes: &mut Vec<u8>);
+    fn mutate(&mut self, bytes: &mut Vec<u8>);
     /// Mutates the given byte slice in place (i.e. the slice length is preserved).
-    fn mutate_in_place(&self, bytes: &mut [u8]);
+    fn mutate_in_place(&mut self, bytes: &mut [u8]);
 }
 
 pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
@@ -58,7 +58,7 @@ pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
 }
 
 impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueMutator<B> {
-    fn mutate(&self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String> {
+    fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String> {
         match &value.field_type {
             // For booleans, just flip the value
             FieldType::Bool => {
@@ -170,7 +170,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
 pub trait SerializedValueMutator<'a> {
     fn new(seed: u64) -> Self;
 
-    fn mutate(&self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String>;
+    fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String>;
 
     fn generate(
         &self,
@@ -500,7 +500,7 @@ where
 fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
     values: &'b [SerializedValue<'b>],
     mutation: SampledMutation,
-    mutator: &M,
+    mutator: &mut M,
     parser: &DescriptorParser,
 ) -> Result<Vec<PerformedMutation>, String> {
     let Some(value) = find_value_in_object(values, &mutation.path) else {
@@ -1087,7 +1087,7 @@ impl<'p> Mutator<'p> {
         'b: 'p,
     {
         let mut sampler = S::new(seed);
-        let mutator = M::new(seed);
+        let mut mutator = M::new(seed);
         let obj_parser = ObjectParser::new(self.descriptor.clone(), self.parser);
 
         // Try parsing the blob according to `self.descriptor`
@@ -1109,7 +1109,7 @@ impl<'p> Mutator<'p> {
             .ok_or_else(|| "No mutation sample available".to_string())?;
 
         // Perform the mutation
-        let performed = mutate(&values, mutation, &mutator, self.parser)?;
+        let performed = mutate(&values, mutation, &mut mutator, self.parser)?;
         // Reserialize the object with the mutation applied
         finalize_mutations(data, &values, performed)
     }
@@ -1142,7 +1142,7 @@ impl<'p> Mutator<'p> {
         'b: 'p,
     {
         let mut sampler = S::new(seed);
-        let mutator = M::new(seed);
+        let mut mutator = M::new(seed);
         let obj_parser = ObjectParser::new(self.descriptor.clone(), self.parser);
 
         let values_to_mutate = obj_parser.parse(to_mutate)?;
@@ -1199,7 +1199,7 @@ impl<'p> Mutator<'p> {
         };
 
         // Perform the mutation
-        let performed = mutate(&values_to_mutate, mutation, &mutator, self.parser)?;
+        let performed = mutate(&values_to_mutate, mutation, &mut mutator, self.parser)?;
         // Reserialize the object with the mutation applied
         finalize_mutations(to_mutate, &values_to_mutate, performed)
     }
@@ -1242,11 +1242,11 @@ mod tests {
         fn new(_seed: u64) -> Self {
             Self {}
         }
-        fn mutate(&self, bytes: &mut Vec<u8>) {
+        fn mutate(&mut self, bytes: &mut Vec<u8>) {
             bytes.fill(0xFF);
         }
 
-        fn mutate_in_place(&self, bytes: &mut [u8]) {
+        fn mutate_in_place(&mut self, bytes: &mut [u8]) {
             bytes.fill(0xFF);
         }
     }
@@ -1433,7 +1433,7 @@ mod tests {
         ];
 
         let values = obj_parser.parse(&data).unwrap();
-        let mutator = StdSerializedValueMutator {
+        let mut mutator = StdSerializedValueMutator {
             byte_array_mutator: TestByteArrayMutator,
         };
 
@@ -1443,7 +1443,7 @@ mod tests {
             path: FieldPath::new(vec![0]),
             additional_path: None,
         };
-        let result = mutate(&values, bool_mutation, &mutator, &parser).unwrap();
+        let result = mutate(&values, bool_mutation, &mut mutator, &parser).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path.indices, vec![0]);
         assert_eq!(result[0].mutated_bytes, vec![0x0]);
@@ -1454,7 +1454,7 @@ mod tests {
             path: FieldPath::new(vec![1]),
             additional_path: None,
         };
-        let result = mutate(&values, u8_mutation, &mutator, &parser).unwrap();
+        let result = mutate(&values, u8_mutation, &mut mutator, &parser).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path.indices, vec![1]);
         assert_eq!(result[0].mutated_bytes, vec![0xFF]);
@@ -1465,7 +1465,7 @@ mod tests {
             path: FieldPath::new(vec![2]),
             additional_path: None,
         };
-        let result = mutate(&values, u16_mutation, &mutator, &parser).unwrap();
+        let result = mutate(&values, u16_mutation, &mut mutator, &parser).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path.indices, vec![2]);
         assert_eq!(result[0].mutated_bytes, vec![0xFF, 0xFF]);
@@ -1476,7 +1476,7 @@ mod tests {
             path: FieldPath::new(vec![3]),
             additional_path: None,
         };
-        let result = mutate(&values, u256_mutation, &mutator, &parser).unwrap();
+        let result = mutate(&values, u256_mutation, &mut mutator, &parser).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path.indices, vec![3]);
         assert_eq!(result[0].mutated_bytes, vec![0xFF; 32]);
@@ -1487,7 +1487,7 @@ mod tests {
             path: FieldPath::new(vec![4]),
             additional_path: None,
         };
-        let result = mutate(&values, bytes_mutation, &mutator, &parser).unwrap();
+        let result = mutate(&values, bytes_mutation, &mut mutator, &parser).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].path.indices, vec![4]);
         assert_eq!(result[0].mutated_bytes, vec![0xFF; 4]);
@@ -1498,7 +1498,7 @@ mod tests {
             path: FieldPath::new(vec![99]), // Invalid index
             additional_path: None,
         };
-        assert!(mutate(&values, invalid_mutation, &mutator, &parser).is_err());
+        assert!(mutate(&values, invalid_mutation, &mut mutator, &parser).is_err());
 
         Ok(())
     }
@@ -2400,12 +2400,12 @@ mod tests {
             ));
 
             // Create the mutator with our test byte array mutator
-            let mutator = StdSerializedValueMutator {
+            let mut mutator = StdSerializedValueMutator {
                 byte_array_mutator: TestByteArrayMutator,
             };
 
             // Apply the mutation
-            let performed_mutations = mutate(&values, mutation, &mutator, &parser).unwrap();
+            let performed_mutations = mutate(&values, mutation, &mut mutator, &parser).unwrap();
 
             println!("{:#?}", performed_mutations);
             let final_bytes =
