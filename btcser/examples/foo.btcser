@@ -1,3 +1,10 @@
 fizz { u8, u64, bytes<8> }
 bar { u8, slice<fizz, '0'> }
 foo { vec<vec<fizz>> }
+
+Alt { u32(0xdeadbeef) }
+Alt { u32(0xffffffff) }
+Alt { u32(0x11111111) }
+Alt { u32(0x22222222), vec<foo> }
+
+Test { vec<Alt> }

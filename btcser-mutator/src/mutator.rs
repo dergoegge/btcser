@@ -7,6 +7,8 @@ use btcser::{
     parser::{Descriptor, DescriptorParser, FieldPath, FieldType, IntType},
 };
 
+use rand::{rngs::SmallRng, SeedableRng};
+
 use crate::sampler::WeightedReservoirSampler;
 
 /// `Mutation` enumerates all possible types of mutations that can be performed on a btcser object.
@@ -55,6 +57,7 @@ pub trait ByteArrayMutator {
 
 pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
     pub byte_array_mutator: B,
+    rng: SmallRng,
 }
 
 impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueMutator<B> {
@@ -160,9 +163,31 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
         }
     }
 
+    fn generate(
+        &mut self,
+        field_type: &FieldType,
+        parser: &DescriptorParser,
+    ) -> Result<Vec<u8>, String> {
+        let mut rng = SmallRng::from_rng(&mut self.rng).unwrap();
+        self.generate_with_rng(field_type, parser, &mut rng)
+    }
+
+    fn fixup_length_field(
+        &mut self,
+        length_field: &SerializedValue<'a>,
+        new_length: u64,
+        parser: &DescriptorParser,
+    ) -> Result<Vec<u8>, String> {
+        let mut rng = SmallRng::from_rng(&mut self.rng).unwrap();
+        self.fixup_length_field_with_rng(length_field, new_length, parser, &mut rng)
+    }
+
     fn new(seed: u64) -> Self {
+        let mut rng_seed = [0u8; 32];
+        rng_seed[..8].copy_from_slice(&seed.to_le_bytes());
         Self {
             byte_array_mutator: ByteArrayMutator::new(seed),
+            rng: SmallRng::from_seed(rng_seed),
         }
     }
 }
@@ -173,9 +198,19 @@ pub trait SerializedValueMutator<'a> {
     fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String>;
 
     fn generate(
+        &mut self,
+        field_type: &FieldType,
+        parser: &DescriptorParser,
+    ) -> Result<Vec<u8>, String> {
+        let mut rng = SmallRng::from_seed([0u8; 32]);
+        self.generate_with_rng(field_type, parser, &mut rng)
+    }
+
+    fn generate_with_rng<R: rand::Rng>(
         &self,
         field_type: &FieldType,
         parser: &DescriptorParser,
+        rng: &mut R,
     ) -> Result<Vec<u8>, String> {
         match field_type {
             FieldType::Bool => Ok(vec![0]), // false
@@ -205,11 +240,19 @@ pub trait SerializedValueMutator<'a> {
                 // For structs, concatenate default values of all fields
                 let mut bytes = Vec::new();
                 if let Some(descriptor) = parser.get_descriptor(name) {
+                    // Generate from one of the possble descriptors for this struct (i.e. also
+                    // consider the alternatives)
+                    let mut possible_descriptors = vec![descriptor];
+                    possible_descriptors.extend(descriptor.alternatives.iter());
+
+                    let descriptor: &Descriptor =
+                        possible_descriptors[rng.gen::<usize>() % possible_descriptors.len()];
+
                     for field in &descriptor.fields {
                         if let Some(constant_value) = &field.constant_value {
                             bytes.extend(constant_value.clone());
                         } else {
-                            bytes.extend(self.generate(&field.field_type, parser)?);
+                            bytes.extend(self.generate_with_rng(&field.field_type, parser, rng)?);
                         }
                     }
                     Ok(bytes)
@@ -221,10 +264,21 @@ pub trait SerializedValueMutator<'a> {
     }
 
     fn fixup_length_field(
-        &self,
+        &mut self,
         length_field: &SerializedValue<'a>,
         new_length: u64,
         parser: &DescriptorParser,
+    ) -> Result<Vec<u8>, String> {
+        let mut rng = SmallRng::from_seed([0u8; 32]);
+        self.fixup_length_field_with_rng(length_field, new_length, parser, &mut rng)
+    }
+
+    fn fixup_length_field_with_rng<R: rand::Rng>(
+        &mut self,
+        length_field: &SerializedValue<'a>,
+        new_length: u64,
+        parser: &DescriptorParser,
+        rng: &mut R,
     ) -> Result<Vec<u8>, String> {
         match &length_field.field_type {
             FieldType::Int(int_type) => match int_type {
@@ -291,7 +345,7 @@ pub trait SerializedValueMutator<'a> {
                     };
 
                     // Generate a new element for the nested type
-                    let new_element_bytes = self.generate(&vec_type, parser)?;
+                    let new_element_bytes = self.generate_with_rng(&vec_type, parser, rng)?;
                     let new_elements = new_length - old_length;
 
                     // Append the new elements
@@ -354,7 +408,7 @@ fn handle_length_update<'a, M>(
     mutation_path: &FieldPath,
     additional_value: Option<&SerializedValue<'a>>,
     additional_path: Option<FieldPath>,
-    mutator: &M,
+    mutator: &mut M,
     parser: &DescriptorParser,
     values: &[SerializedValue<'a>],
 ) -> Result<Vec<PerformedMutation>, String>
@@ -441,7 +495,7 @@ fn handle_slice_length_field_updates<'a, M>(
     mutation_path: &FieldPath,
     new_length: u64,
     values: &[SerializedValue<'a>],
-    mutator: &M,
+    mutator: &mut M,
     parser: &DescriptorParser,
     skip: Option<FieldPath>,
 ) -> Result<Vec<PerformedMutation>, String>
@@ -1433,9 +1487,7 @@ mod tests {
         ];
 
         let values = obj_parser.parse(&data).unwrap();
-        let mut mutator = StdSerializedValueMutator {
-            byte_array_mutator: TestByteArrayMutator,
-        };
+        let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
 
         // Test mutating bool
         let bool_mutation = SampledMutation {
@@ -1513,9 +1565,7 @@ mod tests {
             )
             .unwrap();
 
-        let mutator = StdSerializedValueMutator {
-            byte_array_mutator: TestByteArrayMutator,
-        };
+        let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
 
         // Test generating an Inner struct
         let inner_type = FieldType::Struct("Inner".to_string());
@@ -2400,9 +2450,7 @@ mod tests {
             ));
 
             // Create the mutator with our test byte array mutator
-            let mut mutator = StdSerializedValueMutator {
-                byte_array_mutator: TestByteArrayMutator,
-            };
+            let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
 
             // Apply the mutation
             let performed_mutations = mutate(&values, mutation, &mut mutator, &parser).unwrap();
@@ -2538,9 +2586,7 @@ mod tests {
 
         // Create mutator instances
         let mutator = Mutator::new(descriptor.clone(), &parser);
-        let value_mutator = StdSerializedValueMutator {
-            byte_array_mutator: TestByteArrayMutator,
-        };
+        let mut value_mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
 
         // Generate two initial blobs for cross-over testing
         let mut current_blob = value_mutator
