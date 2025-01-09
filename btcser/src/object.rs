@@ -1,15 +1,15 @@
 use crate::parser::{Descriptor, DescriptorParser, FieldPath, FieldType, IntType};
 
 #[derive(Debug)]
-pub struct SerializedValue<'a> {
+pub struct Object<'a> {
     bytes: &'a [u8],
     field_type: FieldType,
-    nested_values: Vec<SerializedValue<'a>>,
+    nested_values: Vec<Object<'a>>,
     is_constant: bool,
     length_field_for: Vec<u64>,
 }
 
-impl<'a> SerializedValue<'a> {
+impl<'a> Object<'a> {
     pub fn new(bytes: &'a [u8], field_type: FieldType) -> Self {
         Self {
             bytes,
@@ -20,18 +20,10 @@ impl<'a> SerializedValue<'a> {
         }
     }
 
-    pub fn with_nested(
-        bytes: &'a [u8],
-        field_type: FieldType,
-        nested: Vec<SerializedValue<'a>>,
-    ) -> Self {
-        Self {
-            bytes,
-            field_type,
-            nested_values: nested,
-            is_constant: false,
-            length_field_for: Vec::new(),
-        }
+    pub fn with_nested(bytes: &'a [u8], field_type: FieldType, nested: Vec<Object<'a>>) -> Self {
+        let mut new = Object::new(bytes, field_type);
+        new.nested_values = nested;
+        new
     }
 
     pub fn bytes(&self) -> &'a [u8] {
@@ -42,7 +34,7 @@ impl<'a> SerializedValue<'a> {
         &self.field_type
     }
 
-    pub fn nested_values(&self) -> &[SerializedValue<'a>] {
+    pub fn nested_values(&self) -> &[Object<'a>] {
         self.nested_values.as_slice()
     }
 
@@ -56,9 +48,9 @@ impl<'a> SerializedValue<'a> {
 }
 
 pub fn find_value_in_object<'a>(
-    root: &'a [SerializedValue<'a>],
+    root: &'a [Object<'a>],
     path: &FieldPath,
-) -> Option<&'a SerializedValue<'a>> {
+) -> Option<&'a Object<'a>> {
     let mut current = root;
     let mut value = None;
 
@@ -112,7 +104,7 @@ impl<'p> ObjectParser<'p> {
         Self { descriptor, parser }
     }
 
-    pub fn parse<'a>(&self, data: &'a [u8]) -> Result<Vec<SerializedValue<'a>>, String> {
+    pub fn parse<'a>(&self, data: &'a [u8]) -> Result<Vec<Object<'a>>, String> {
         let mut state = ParseState::new();
         self.parse_with_state(data, &mut state)
     }
@@ -121,7 +113,7 @@ impl<'p> ObjectParser<'p> {
         &self,
         data: &'a [u8],
         state: &mut ParseState,
-    ) -> Result<Vec<SerializedValue<'a>>, String> {
+    ) -> Result<Vec<Object<'a>>, String> {
         let mut values = Vec::new();
         let mut position = 0;
 
@@ -151,7 +143,7 @@ impl<'p> ObjectParser<'p> {
         data: &'a [u8],
         constant: &Option<Vec<u8>>,
         state: &mut ParseState,
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    ) -> Result<(Object<'a>, usize), String> {
         let mut field_length_value = None;
         let res = match &field_type {
             FieldType::Bool => {
@@ -171,17 +163,14 @@ impl<'p> ObjectParser<'p> {
                         return Err("Unexpected end of input: need 32 bytes for 256-bit integer"
                             .to_string());
                     }
-                    Ok((SerializedValue::new(&data[..32], field_type.clone()), 32))
+                    Ok((Object::new(&data[..32], field_type.clone()), 32))
                 }
                 _ => {
                     let (value, size) = self
                         .parse_int(int_type, data)
                         .map_err(|e| format!("Failed parsing Int({:?}): {}", int_type, e))?;
                     field_length_value = Some(value);
-                    Ok((
-                        SerializedValue::new(&data[..size], field_type.clone()),
-                        size,
-                    ))
+                    Ok((Object::new(&data[..size], field_type.clone()), size))
                 }
             },
             FieldType::Bytes(size) => {
@@ -253,11 +242,11 @@ impl<'p> ObjectParser<'p> {
         Ok((value, size))
     }
 
-    fn parse_bool<'a>(&self, data: &'a [u8]) -> Result<(SerializedValue<'a>, usize), String> {
+    fn parse_bool<'a>(&self, data: &'a [u8]) -> Result<(Object<'a>, usize), String> {
         if data.is_empty() {
             return Err("Unexpected end of input".to_string());
         }
-        Ok((SerializedValue::new(&data[..1], FieldType::Bool), 1))
+        Ok((Object::new(&data[..1], FieldType::Bool), 1))
     }
 
     fn parse_int<'a>(&self, int_type: &IntType, data: &'a [u8]) -> Result<(u64, usize), String> {
@@ -335,19 +324,12 @@ impl<'p> ObjectParser<'p> {
         Ok((value, size))
     }
 
-    fn parse_bytes<'a>(
-        &self,
-        size: usize,
-        data: &'a [u8],
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    fn parse_bytes<'a>(&self, size: usize, data: &'a [u8]) -> Result<(Object<'a>, usize), String> {
         if data.len() < size {
             return Err("Unexpected end of input".to_string());
         }
 
-        Ok((
-            SerializedValue::new(&data[..size], FieldType::Bytes(size)),
-            size,
-        ))
+        Ok((Object::new(&data[..size], FieldType::Bytes(size)), size))
     }
 
     fn parse_vec<'a>(
@@ -356,7 +338,7 @@ impl<'p> ObjectParser<'p> {
         data: &'a [u8],
         constant: &Option<Vec<u8>>,
         state: &mut ParseState,
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    ) -> Result<(Object<'a>, usize), String> {
         let (length, length_size, _canonical) =
             decode_compact_size(data).map_err(|e| format!("Failed parsing Vec length: {}", e))?;
 
@@ -371,7 +353,7 @@ impl<'p> ObjectParser<'p> {
         }
 
         Ok((
-            SerializedValue::with_nested(
+            Object::with_nested(
                 &data[..position],
                 FieldType::Vec(Box::new(inner_type.clone())),
                 nested_values,
@@ -387,7 +369,7 @@ impl<'p> ObjectParser<'p> {
         data: &'a [u8],
         constant: &Option<Vec<u8>>,
         state: &mut ParseState,
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    ) -> Result<(Object<'a>, usize), String> {
         let length = state
             .get_field_value(length_field as usize)
             .ok_or_else(|| format!("Length field {} not found", length_field))?;
@@ -404,7 +386,7 @@ impl<'p> ObjectParser<'p> {
         }
 
         Ok((
-            SerializedValue::with_nested(
+            Object::with_nested(
                 &data[..position],
                 FieldType::Slice(Box::new(inner_type.clone()), length_field),
                 nested_values,
@@ -418,7 +400,7 @@ impl<'p> ObjectParser<'p> {
         name: &str,
         data: &'a [u8],
         state: &mut ParseState,
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    ) -> Result<(Object<'a>, usize), String> {
         let struct_descriptor = self.get_struct_descriptor(name)?;
 
         // Setup a temporary state to merge the results of the alternatives (we avoid poluting the
@@ -454,7 +436,7 @@ impl<'p> ObjectParser<'p> {
         descriptor: &Descriptor,
         data: &'a [u8],
         state: &mut ParseState,
-    ) -> Result<(SerializedValue<'a>, usize), String> {
+    ) -> Result<(Object<'a>, usize), String> {
         let mut position = 0;
         let mut nested_values = Vec::new();
 
@@ -472,7 +454,7 @@ impl<'p> ObjectParser<'p> {
         }
 
         Ok((
-            SerializedValue::with_nested(
+            Object::with_nested(
                 &data[..position],
                 FieldType::Struct(descriptor.name.clone()),
                 nested_values,
@@ -1192,19 +1174,19 @@ mod tests {
     fn test_field_path_deeply_nested() {
         // Create a more complex nested structure:
         // [
-        //   SerializedValue([
-        //     SerializedValue([
-        //       SerializedValue(1)
+        //   Object([
+        //     Object([
+        //       Object(1)
         //     ])
         //   ])
         // ]
-        let values = vec![SerializedValue::with_nested(
+        let values = vec![Object::with_nested(
             &[0],
             FieldType::Vec(Box::new(FieldType::Int(IntType::U8))),
-            vec![SerializedValue::with_nested(
+            vec![Object::with_nested(
                 &[0],
                 FieldType::Vec(Box::new(FieldType::Int(IntType::U8))),
-                vec![SerializedValue::new(&[1], FieldType::Int(IntType::U8))],
+                vec![Object::new(&[1], FieldType::Int(IntType::U8))],
             )],
         )];
 

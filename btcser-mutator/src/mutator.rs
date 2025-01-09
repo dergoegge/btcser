@@ -1,8 +1,7 @@
 use btcser::{
     object::{
         decode_compact_size, decode_varint, decode_varint_non_negative, encode_compact_size,
-        encode_varint, encode_varint_non_negative, find_value_in_object, ObjectParser,
-        SerializedValue,
+        encode_varint, encode_varint_non_negative, find_value_in_object, Object, ObjectParser,
     },
     parser::{Descriptor, DescriptorParser, FieldPath, FieldType, IntType},
 };
@@ -55,13 +54,13 @@ pub trait ByteArrayMutator {
     fn mutate_in_place(&mut self, bytes: &mut [u8]);
 }
 
-pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
+pub struct StdObjectMutator<B: ByteArrayMutator> {
     pub byte_array_mutator: B,
     rng: SmallRng,
 }
 
-impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueMutator<B> {
-    fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String> {
+impl<'a, B: ByteArrayMutator> ObjectMutator<'a> for StdObjectMutator<B> {
+    fn mutate(&mut self, value: &Object<'a>) -> Result<Vec<u8>, String> {
         match &value.field_type() {
             // For booleans, just flip the value
             FieldType::Bool => {
@@ -174,7 +173,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
 
     fn fixup_length_field(
         &mut self,
-        length_field: &SerializedValue<'a>,
+        length_field: &Object<'a>,
         new_length: u64,
         parser: &DescriptorParser,
     ) -> Result<Vec<u8>, String> {
@@ -192,10 +191,10 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
     }
 }
 
-pub trait SerializedValueMutator<'a> {
+pub trait ObjectMutator<'a> {
     fn new(seed: u64) -> Self;
 
-    fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String>;
+    fn mutate(&mut self, value: &Object<'a>) -> Result<Vec<u8>, String>;
 
     fn generate(
         &mut self,
@@ -265,7 +264,7 @@ pub trait SerializedValueMutator<'a> {
 
     fn fixup_length_field(
         &mut self,
-        length_field: &SerializedValue<'a>,
+        length_field: &Object<'a>,
         new_length: u64,
         parser: &DescriptorParser,
     ) -> Result<Vec<u8>, String> {
@@ -275,7 +274,7 @@ pub trait SerializedValueMutator<'a> {
 
     fn fixup_length_field_with_rng<R: rand::Rng>(
         &mut self,
-        length_field: &SerializedValue<'a>,
+        length_field: &Object<'a>,
         new_length: u64,
         parser: &DescriptorParser,
         rng: &mut R,
@@ -405,16 +404,16 @@ fn compare_mutations(a: &PerformedMutation, b: &PerformedMutation) -> std::cmp::
 fn handle_length_update<'a, M>(
     field_type: &FieldType,
     new_length: u64,
-    value: &SerializedValue,
+    value: &Object,
     mutation_path: &FieldPath,
-    additional_value: Option<&SerializedValue<'a>>,
+    additional_value: Option<&Object<'a>>,
     additional_path: Option<FieldPath>,
     mutator: &mut M,
     parser: &DescriptorParser,
-    values: &[SerializedValue<'a>],
+    values: &[Object<'a>],
 ) -> Result<Vec<PerformedMutation>, String>
 where
-    M: SerializedValueMutator<'a>,
+    M: ObjectMutator<'a>,
 {
     match field_type {
         FieldType::Vec(_) => {
@@ -492,16 +491,16 @@ where
 }
 
 fn handle_slice_length_field_updates<'a, M>(
-    value: &SerializedValue,
+    value: &Object,
     mutation_path: &FieldPath,
     new_length: u64,
-    values: &[SerializedValue<'a>],
+    values: &[Object<'a>],
     mutator: &mut M,
     parser: &DescriptorParser,
     skip: Option<FieldPath>,
 ) -> Result<Vec<PerformedMutation>, String>
 where
-    M: SerializedValueMutator<'a>,
+    M: ObjectMutator<'a>,
 {
     let mut slice_mutations = Vec::new();
 
@@ -543,7 +542,7 @@ where
     Ok(slice_mutations)
 }
 
-// Take a parsed binary object (i.e. list of `SerializedValue`s) and apply a mutation. Returns a
+// Take a parsed binary object (i.e. list of `Object`s) and apply a mutation. Returns a
 // list of mutations that were performed.
 //
 // Note: any given sampled mutation is potentially split up into multiple performed mutations, to
@@ -552,8 +551,8 @@ where
 // For example, if a `Add` mutation is sampled for a slice, then the mutation will be split up
 // into a `Mutate` mutation for the slice's length field, and an `Add` mutation for the slice's
 // element.
-fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
-    values: &'b [SerializedValue<'b>],
+fn mutate<'a, 'b: 'a, M: ObjectMutator<'a>>(
+    values: &'b [Object<'b>],
     mutation: SampledMutation,
     mutator: &mut M,
     parser: &DescriptorParser,
@@ -711,7 +710,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
 // the final serialized continuous bytes.
 fn finalize_mutations<'a>(
     original_data: &[u8],
-    parsed_values: &[SerializedValue<'a>],
+    parsed_values: &[Object<'a>],
     mutations: Vec<PerformedMutation>,
 ) -> Result<Vec<u8>, String> {
     // Sort mutations by path to ensure we process them in order
@@ -809,7 +808,7 @@ impl<'p> Mutator<'p> {
     // mutations will be sampled.
     fn sample_mutations<'a, S>(
         &self,
-        values: &'a [SerializedValue<'a>],
+        values: &'a [Object<'a>],
         sampler: &mut S,
         current_path: Vec<usize>,
         cross_over: bool,
@@ -1092,7 +1091,7 @@ impl<'p> Mutator<'p> {
     // of the target field type.
     fn sample_data_sources<'a, S>(
         &self,
-        values: &'a [SerializedValue<'a>],
+        values: &'a [Object<'a>],
         field_type: &FieldType,
         sampler: &mut S,
         current_path: Vec<usize>,
@@ -1127,7 +1126,7 @@ impl<'p> Mutator<'p> {
     ///
     /// # Type Parameters
     /// * `S` - A type implementing `WeightedReservoirSampler<SampledMutation>`
-    /// * `M` - A type implementing `SerializedValueMutator`
+    /// * `M` - A type implementing `ObjectMutator`
     ///
     /// # Returns
     /// * `Ok(Vec<u8>)` - The mutated bytes
@@ -1138,7 +1137,7 @@ impl<'p> Mutator<'p> {
     pub fn mutate<'b, S, M>(&self, data: &'b [u8], seed: u64) -> Result<Vec<u8>, String>
     where
         S: WeightedReservoirSampler<SampledMutation>,
-        M: for<'a> SerializedValueMutator<'a>,
+        M: for<'a> ObjectMutator<'a>,
         'b: 'p,
     {
         let mut sampler = S::new(seed);
@@ -1179,7 +1178,7 @@ impl<'p> Mutator<'p> {
     /// # Type Parameters
     /// * `S` - A type implementing `WeightedReservoirSampler<SampledMutation>`
     /// * `D` - A type implementing `WeightedReservoirSampler<FieldPath>`
-    /// * `M` - A type implementing `SerializedValueMutator`
+    /// * `M` - A type implementing `ObjectMutator`
     ///
     /// # Returns
     /// * `Ok(Vec<u8>)` - The mutated bytes
@@ -1193,7 +1192,7 @@ impl<'p> Mutator<'p> {
     where
         S: WeightedReservoirSampler<SampledMutation>,
         D: WeightedReservoirSampler<FieldPath>,
-        M: for<'a> SerializedValueMutator<'a>,
+        M: for<'a> ObjectMutator<'a>,
         'b: 'p,
     {
         let mut sampler = S::new(seed);
@@ -1488,7 +1487,7 @@ mod tests {
         ];
 
         let values = obj_parser.parse(&data).unwrap();
-        let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
+        let mut mutator = StdObjectMutator::<TestByteArrayMutator>::new(0);
 
         // Test mutating bool
         let bool_mutation = SampledMutation {
@@ -1566,7 +1565,7 @@ mod tests {
             )
             .unwrap();
 
-        let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
+        let mut mutator = StdObjectMutator::<TestByteArrayMutator>::new(0);
 
         // Test generating an Inner struct
         let inner_type = FieldType::Struct("Inner".to_string());
@@ -2451,7 +2450,7 @@ mod tests {
             ));
 
             // Create the mutator with our test byte array mutator
-            let mut mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
+            let mut mutator = StdObjectMutator::<TestByteArrayMutator>::new(0);
 
             // Apply the mutation
             let performed_mutations = mutate(&values, mutation, &mut mutator, &parser).unwrap();
@@ -2587,7 +2586,7 @@ mod tests {
 
         // Create mutator instances
         let mutator = Mutator::new(descriptor.clone(), &parser);
-        let mut value_mutator = StdSerializedValueMutator::<TestByteArrayMutator>::new(0);
+        let mut value_mutator = StdObjectMutator::<TestByteArrayMutator>::new(0);
 
         // Generate two initial blobs for cross-over testing
         let mut current_blob = value_mutator
@@ -2606,11 +2605,10 @@ mod tests {
             if seed % 2 == 0 {
                 // Regular mutation
                 println!("Regular mutation on {:?}", current_blob);
-                match mutator
-                    .mutate::<ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(
-                        &current_blob,
-                        seed,
-                    ) {
+                match mutator.mutate::<ChaoSampler<_>, StdObjectMutator<TestByteArrayMutator>>(
+                    &current_blob,
+                    seed,
+                ) {
                     Ok(mutated_blob) => {
                         size_changes.push(mutated_blob.len() as i64 - current_blob.len() as i64);
 
@@ -2630,7 +2628,7 @@ mod tests {
             } else {
                 // Cross-over mutation
                 println!("Cross-over between {:?} and {:?}", current_blob, donor_blob);
-                match mutator.cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(
+                match mutator.cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdObjectMutator<TestByteArrayMutator>>(
                     &current_blob,
                     &donor_blob,
                     seed,

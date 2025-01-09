@@ -1,7 +1,7 @@
 #![no_main]
 
 use btcser::{object::ObjectParser, parser::DescriptorParser};
-use btcser_mutator::{sampler::ChaoSampler, ByteArrayMutator, Mutator, StdSerializedValueMutator};
+use btcser_mutator::{sampler::ChaoSampler, ByteArrayMutator, Mutator, StdObjectMutator};
 
 use libfuzzer_sys::fuzz_target;
 
@@ -82,7 +82,7 @@ fuzz_target!(|data: &[u8]| {
 
     // Attempt to parse and perform a mutation
     if let Ok(mutated_bytes) =
-        mutator.mutate::<ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(&data, 0)
+        mutator.mutate::<ChaoSampler<_>, StdObjectMutator<TestByteArrayMutator>>(&data, 0)
     {
         // If mutating succeeded, assert that reparsing the mutation result succeeds.
         let obj_parser = ObjectParser::new(descriptor, &parser);
@@ -91,7 +91,13 @@ fuzz_target!(|data: &[u8]| {
             .expect("Mutated value should be parseable");
 
         // Test crossover with the original and mutated data
-        if let Ok(crossover_bytes) = mutator.cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdSerializedValueMutator<TestByteArrayMutator>>(&data, &mutated_bytes, 0) {
+        if let Ok(crossover_bytes) = mutator
+            .cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdObjectMutator<TestByteArrayMutator>>(
+                &data,
+                &mutated_bytes,
+                0,
+            )
+        {
             // Verify that the crossover result is also parseable
             let _ = obj_parser
                 .parse(&crossover_bytes)

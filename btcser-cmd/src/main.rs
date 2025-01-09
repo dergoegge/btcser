@@ -2,10 +2,10 @@ use std::fs;
 use std::io::{self, Read};
 
 use btcser::{
-    object::{ObjectParser, SerializedValue},
+    object::{Object, ObjectParser},
     parser::{DescriptorParser, IntType},
 };
-use btcser_mutator::{sampler::ChaoSampler, ByteArrayMutator, Mutator, StdSerializedValueMutator};
+use btcser_mutator::{sampler::ChaoSampler, ByteArrayMutator, Mutator, StdObjectMutator};
 
 use clap::{Parser, Subcommand};
 use libafl::mutators::MutatorsTuple;
@@ -195,7 +195,7 @@ fn main() {
 
             // Perform mutation
             let mutated = mutator
-                .mutate::<ChaoSampler<_>, StdSerializedValueMutator<SimpleMutator>>(&bytes, seed)
+                .mutate::<ChaoSampler<_>, StdObjectMutator<SimpleMutator>>(&bytes, seed)
                 .expect("Failed to mutate input");
 
             // Validate that the mutated bytes can be parsed
@@ -216,7 +216,7 @@ fn main() {
     }
 }
 
-fn print_serialized_value(value: &SerializedValue, indent: usize, path: &str) {
+fn print_serialized_value(value: &Object, indent: usize, path: &str) {
     let indent_str = "  ".repeat(indent);
 
     match &value.field_type() {

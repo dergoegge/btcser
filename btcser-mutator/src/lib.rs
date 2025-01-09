@@ -112,9 +112,7 @@ pub extern "C" fn btcser_mutator_mutate(
     let result = unsafe {
         (*mutator)
             .mutator
-            .mutate::<ChaoSampler<_>, StdSerializedValueMutator<LibFuzzerByteArrayMutator>>(
-                data_slice, seed,
-            )
+            .mutate::<ChaoSampler<_>, StdObjectMutator<LibFuzzerByteArrayMutator>>(data_slice, seed)
     };
 
     match result {
@@ -159,7 +157,7 @@ pub extern "C" fn btcser_mutator_cross_over(
     let result = unsafe {
         (*mutator)
             .mutator
-            .cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdSerializedValueMutator<LibFuzzerByteArrayMutator>>(
+            .cross_over::<ChaoSampler<_>, ChaoSampler<_>, StdObjectMutator<LibFuzzerByteArrayMutator>>(
                 data1_slice,
                 data2_slice,
                 seed,
