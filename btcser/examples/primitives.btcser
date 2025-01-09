@@ -37,4 +37,4 @@ header {
 
 block { header, vec<tx_allow_wit> }     # block with segwit transactions
 block_no_wit { header, vec<tx_no_wit> } # block with non-segwit transactions
-empty_block { header, u8(0x00) }           # empty block
+empty_block { header, u8(0x00) }        # empty block

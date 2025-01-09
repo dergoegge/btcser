@@ -62,17 +62,17 @@ pub struct StdSerializedValueMutator<B: ByteArrayMutator> {
 
 impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueMutator<B> {
     fn mutate(&mut self, value: &SerializedValue<'a>) -> Result<Vec<u8>, String> {
-        match &value.field_type {
+        match &value.field_type() {
             // For booleans, just flip the value
             FieldType::Bool => {
-                let mut bytes = vec![value.bytes[0]];
+                let mut bytes = vec![value.bytes()[0]];
                 bytes[0] = (bytes[0] < 1) as u8; // Flip the boolean
                 Ok(bytes)
             }
 
             // For integers, mutate in place
             FieldType::Int(int_type) => {
-                let mut bytes = value.bytes.to_vec();
+                let mut bytes = value.bytes().to_vec();
                 match int_type {
                     // For variable-length integers, decode-mutate-encode
                     IntType::CompactSize(_) | IntType::VarInt | IntType::VarIntNonNegative => {
@@ -114,7 +114,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
 
             // For byte arrays (fixed size), mutate in place
             FieldType::Bytes(_) => {
-                let mut bytes = value.bytes.to_vec();
+                let mut bytes = value.bytes().to_vec();
                 self.byte_array_mutator.mutate_in_place(&mut bytes);
                 Ok(bytes)
             }
@@ -124,13 +124,13 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
                 match &**inner_type {
                     // For Vec<u8>, treat as a single byte array but preserve the length
                     FieldType::Int(IntType::U8) => {
-                        let length_size = match value.bytes[0] {
+                        let length_size = match value.bytes()[0] {
                             0..=252 => 1,
                             253 => 3,
                             254 => 5,
                             255 => 9,
                         };
-                        let mut bytes = value.bytes[length_size..].to_vec();
+                        let mut bytes = value.bytes()[length_size..].to_vec();
                         // Only mutate the content, preserving the length prefix
                         self.byte_array_mutator.mutate(&mut bytes);
                         let mut len_prefixed = encode_compact_size(bytes.len() as u64);
@@ -138,7 +138,7 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
                         Ok(len_prefixed)
                     }
                     // For other vector types, return as is (handled by Add/Delete mutations)
-                    _ => Ok(value.bytes.to_vec()),
+                    _ => Ok(value.bytes().to_vec()),
                 }
             }
 
@@ -147,12 +147,12 @@ impl<'a, B: ByteArrayMutator> SerializedValueMutator<'a> for StdSerializedValueM
                 match &**inner_type {
                     // For Slice<u8>, treat as a single byte array
                     FieldType::Int(IntType::U8) => {
-                        let mut bytes = value.bytes.to_vec();
+                        let mut bytes = value.bytes().to_vec();
                         self.byte_array_mutator.mutate(&mut bytes);
                         Ok(bytes)
                     }
                     // For other slice types, return as is (handled by Add/Delete mutations)
-                    _ => Ok(value.bytes.to_vec()),
+                    _ => Ok(value.bytes().to_vec()),
                 }
             }
 
@@ -280,7 +280,7 @@ pub trait SerializedValueMutator<'a> {
         parser: &DescriptorParser,
         rng: &mut R,
     ) -> Result<Vec<u8>, String> {
-        match &length_field.field_type {
+        match &length_field.field_type() {
             FieldType::Int(int_type) => match int_type {
                 IntType::U8 => {
                     if new_length > u8::MAX as u64 {
@@ -324,22 +324,22 @@ pub trait SerializedValueMutator<'a> {
             },
             FieldType::Vec(_) => {
                 // Get the size of the old length prefix
-                let old_length_size = match length_field.bytes[0] {
+                let old_length_size = match length_field.bytes()[0] {
                     0..=252 => 1,
                     253 => 3,
                     254 => 5,
                     255 => 9,
                 };
 
-                let old_length = length_field.nested_values.len() as u64;
+                let old_length = length_field.nested_values().len() as u64;
                 assert!(old_length != new_length);
                 let mut new_bytes = encode_compact_size(new_length);
 
                 if new_length > old_length {
                     // Growing: keep existing contents
-                    new_bytes.extend_from_slice(&length_field.bytes[old_length_size..]);
+                    new_bytes.extend_from_slice(&length_field.bytes()[old_length_size..]);
 
-                    let vec_type = match &length_field.field_type {
+                    let vec_type = match &length_field.field_type() {
                         FieldType::Vec(inner_type) => &**inner_type,
                         _ => unreachable!(),
                     };
@@ -356,10 +356,11 @@ pub trait SerializedValueMutator<'a> {
                     // Shrinking: keep only the first new_length elements
                     let mut size_of_elements = 0;
                     for i in 0..new_length as usize {
-                        size_of_elements += length_field.nested_values[i].bytes.len();
+                        size_of_elements += length_field.nested_values()[i].bytes().len();
                     }
                     new_bytes.extend_from_slice(
-                        &length_field.bytes[old_length_size..(old_length_size + size_of_elements)],
+                        &length_field.bytes()
+                            [old_length_size..(old_length_size + size_of_elements)],
                     );
                 }
 
@@ -367,7 +368,7 @@ pub trait SerializedValueMutator<'a> {
             }
             _ => Err(format!(
                 "Invalid field type for length field: {:?}",
-                length_field.field_type
+                length_field.field_type()
             )),
         }
     }
@@ -419,7 +420,7 @@ where
         FieldType::Vec(_) => {
             // For vectors, update the length encoding at the start
             let length_bytes = encode_compact_size(new_length);
-            let old_length_size = match value.bytes[0] {
+            let old_length_size = match value.bytes()[0] {
                 0..=252 => 1,
                 253 => 3,
                 254 => 5,
@@ -428,7 +429,7 @@ where
 
             // Combine new length encoding with existing vector contents
             let mut combined_bytes = length_bytes;
-            combined_bytes.extend_from_slice(&value.bytes[old_length_size..]);
+            combined_bytes.extend_from_slice(&value.bytes()[old_length_size..]);
 
             let mut mutations = vec![PerformedMutation {
                 mutation: Mutation::Mutate,
@@ -504,7 +505,7 @@ where
 {
     let mut slice_mutations = Vec::new();
 
-    for slice_idx in value.length_field_for.iter() {
+    for slice_idx in value.length_field_for().iter() {
         let mut slice_path = mutation_path.clone();
         slice_path.indices.pop();
         slice_path.indices.push(*slice_idx as usize);
@@ -514,13 +515,13 @@ where
             continue;
         }
 
-        let old_length = value.nested_values.len();
+        let old_length = value.nested_values().len();
         let mut new_element = vec![];
         let slice_mutation = if new_length > old_length as u64 {
             let slice_value = find_value_in_object(values, &slice_path)
                 .ok_or_else(|| "Could not find slice for vec length field!".to_string())?;
 
-            let slice_type = match &slice_value.field_type {
+            let slice_type = match &slice_value.field_type() {
                 FieldType::Slice(inner_type, _) => &**inner_type,
                 _ => unreachable!(),
             };
@@ -588,7 +589,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
                 mutated_bytes,
             }];
 
-            if new_length != value.bytes.len() {
+            if new_length != value.bytes().len() {
                 // If the length changed and there is and additional path value present, then we
                 // adjust the length field (i.e. the additional value).
                 if let Some(length_field) = additional_value {
@@ -605,7 +606,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
             Ok(mutations)
         }
         Mutation::Add | Mutation::Clone(Some(_)) => {
-            let element_type = match &value.field_type {
+            let element_type = match &value.field_type() {
                 FieldType::Vec(inner_type) => inner_type,
                 FieldType::Slice(inner_type, _) => inner_type,
                 _ => {
@@ -617,7 +618,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
                 Mutation::Clone(Some(cloned_bytes)) => cloned_bytes,
                 _ => unreachable!(),
             };
-            let new_length = value.nested_values.len() + 1;
+            let new_length = value.nested_values().len() + 1;
 
             let mut mutations = vec![PerformedMutation {
                 mutation: Mutation::Add,
@@ -627,7 +628,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
 
             // Handle length field updates
             mutations.extend(handle_length_update(
-                &value.field_type,
+                &value.field_type(),
                 new_length as u64,
                 value,
                 &mutation.path,
@@ -641,26 +642,26 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
             Ok(mutations)
         }
         Mutation::Delete => {
-            if value.nested_values.is_empty() {
+            if value.nested_values().is_empty() {
                 return Err("Cannot delete from empty collection".to_string());
             }
 
-            let new_length = value.nested_values.len() - 1;
+            let new_length = value.nested_values().len() - 1;
             let mut mutations = Vec::new();
 
-            match &value.field_type {
+            match &value.field_type() {
                 FieldType::Vec(_) => {
                     let element_size = value
-                        .nested_values
+                        .nested_values()
                         .last()
                         .expect("vector can't be empty here")
-                        .bytes
+                        .bytes()
                         .len(); // size of last element we're gonna cut off
-                    let content_end = value.bytes.len() - element_size;
+                    let content_end = value.bytes().len() - element_size;
 
                     // Handle length field updates with truncated content
                     let mut length_mutations = handle_length_update(
-                        &value.field_type,
+                        &value.field_type(),
                         new_length as u64,
                         value,
                         &mutation.path,
@@ -686,7 +687,7 @@ fn mutate<'a, 'b: 'a, M: SerializedValueMutator<'a>>(
 
                     // Handle length field updates
                     mutations.extend(handle_length_update(
-                        &value.field_type,
+                        &value.field_type(),
                         new_length as u64,
                         value,
                         &mutation.path,
@@ -727,7 +728,7 @@ fn finalize_mutations<'a>(
             .ok_or_else(|| "Invalid mutation path".to_string())?;
 
         // Calculate the start position of this value in the original data
-        let value_start = value.bytes.as_ptr() as usize - original_data.as_ptr() as usize;
+        let value_start = value.bytes().as_ptr() as usize - original_data.as_ptr() as usize;
 
         // Copy any bytes between the current position and the start of this value
         if value_start > current_position {
@@ -738,10 +739,10 @@ fn finalize_mutations<'a>(
         match mutation.mutation {
             Mutation::Mutate => {
                 serialized.extend(&mutation.mutated_bytes);
-                current_position = value_start + value.bytes.len();
+                current_position = value_start + value.bytes().len();
             }
             Mutation::Add => {
-                match &value.field_type {
+                match &value.field_type() {
                     FieldType::Vec(_) => {
                         // For vectors, only add the new element bytes
                         // (the Mutate mutation will handle the length encoding)
@@ -749,27 +750,27 @@ fn finalize_mutations<'a>(
                     }
                     _ => {
                         // For slices, keep existing elements and append new one
-                        serialized.extend(value.bytes);
+                        serialized.extend(value.bytes());
                         serialized.extend(&mutation.mutated_bytes);
                     }
                 }
-                current_position = value_start + value.bytes.len();
+                current_position = value_start + value.bytes().len();
             }
             Mutation::Delete => {
                 // For deletion, we need to calculate the size of one element
-                let element_size = match &value.field_type {
+                let element_size = match &value.field_type() {
                     FieldType::Slice(_, _) => value
-                        .nested_values
+                        .nested_values()
                         .last()
                         .expect("should not sample delete mutation on empty slice")
-                        .bytes
+                        .bytes()
                         .len(),
                     _ => return Err("Delete mutation only supported for Slice types".to_string()),
                 };
 
                 // Copy all bytes except the last element
-                serialized.extend(&value.bytes[..value.bytes.len() - element_size]);
-                current_position = value_start + value.bytes.len();
+                serialized.extend(&value.bytes()[..value.bytes().len() - element_size]);
+                current_position = value_start + value.bytes().len();
             }
             _ => return Err("unsupported mutation".to_string()),
         }
@@ -821,7 +822,7 @@ impl<'p> Mutator<'p> {
 
         // For each value at the current level
         for (idx, value) in values.iter().enumerate() {
-            if value.is_constant {
+            if value.is_constant() {
                 // Don't mutate constants
                 continue;
             }
@@ -831,10 +832,10 @@ impl<'p> Mutator<'p> {
             let field_path = FieldPath::new(path.clone());
 
             // Sample potential mutations for this value
-            match &value.field_type {
+            match &value.field_type() {
                 FieldType::Bool => {
                     // Only sample mutations for boolean fields that are not length fields.
-                    if value.length_field_for.is_empty() {
+                    if value.length_field_for().is_empty() {
                         // Sample "flip" mutation for boolean fields. I.e. value = !value.
                         sampler.add(
                             SampledMutation {
@@ -863,7 +864,7 @@ impl<'p> Mutator<'p> {
                 }
                 FieldType::Int(_) => {
                     // Only sample mutations for integer fields that are not length fields.
-                    if value.length_field_for.is_empty() {
+                    if value.length_field_for().is_empty() {
                         // Sample the `Copy` mutation for integer fields. I.e. take the value of
                         // another integer and replace the value of this integer with it.
                         sampler.add(
@@ -911,7 +912,7 @@ impl<'p> Mutator<'p> {
                     );
                 }
                 FieldType::Vec(inner_type) => {
-                    if value.length_field_for.is_empty() {
+                    if value.length_field_for().is_empty() {
                         // Sample the `Copy` mutation for vectors. I.e. take the value of another
                         // vector (of the same type) and replace the value of this vector with it.
                         //
@@ -931,7 +932,7 @@ impl<'p> Mutator<'p> {
                         // Special case for non-length field vectors holding bytes: sample the
                         // `Mutate` mutation. I.e. mutate the vector as if it were a byte array,
                         // arbitrary length changes are possible.
-                        if value.length_field_for.is_empty() {
+                        if value.length_field_for().is_empty() {
                             sampler.add(
                                 SampledMutation {
                                     mutation: Mutation::Mutate,
@@ -964,7 +965,7 @@ impl<'p> Mutator<'p> {
                             mutate_weight,
                         );
 
-                        if !value.nested_values.is_empty() {
+                        if !value.nested_values().is_empty() {
                             // If the vector is not empty, sample the `Delete` mutation. I.e.
                             // remove the last element of this vector.
                             sampler.add(
@@ -978,7 +979,7 @@ impl<'p> Mutator<'p> {
                         }
 
                         // Recursively sample mutations for the vector's elements.
-                        self.sample_mutations(&value.nested_values, sampler, path, cross_over);
+                        self.sample_mutations(&value.nested_values(), sampler, path, cross_over);
                     }
                 }
                 FieldType::Slice(inner_type, idx) => {
@@ -1020,8 +1021,8 @@ impl<'p> Mutator<'p> {
                         // "bool,slice<T, '0'>" represent either "[0x0]" or "[0x01,<one slice element>]"
                         //
                         // This is why we only allow the `Add` mutation if the slice is empty.
-                        let should_allow_add = match &length_field.field_type {
-                            FieldType::Bool => value.nested_values.is_empty(),
+                        let should_allow_add = match &length_field.field_type() {
+                            FieldType::Bool => value.nested_values().is_empty(),
                             _ => true,
                         };
 
@@ -1049,7 +1050,7 @@ impl<'p> Mutator<'p> {
                             );
                         }
 
-                        if !value.nested_values.is_empty() {
+                        if !value.nested_values().is_empty() {
                             // If the slice is not empty, sample the `Delete` mutation. I.e.
                             // remove the last element of this slice.
                             sampler.add(
@@ -1063,7 +1064,7 @@ impl<'p> Mutator<'p> {
                         }
 
                         // Recursively sample mutations for the slice's elements.
-                        self.sample_mutations(&value.nested_values, sampler, path, cross_over);
+                        self.sample_mutations(&value.nested_values(), sampler, path, cross_over);
                     }
                 }
                 FieldType::Struct(_) => {
@@ -1079,7 +1080,7 @@ impl<'p> Mutator<'p> {
                     );
 
                     // Recursively sample mutations for the struct's fields.
-                    self.sample_mutations(&value.nested_values, sampler, path, cross_over);
+                    self.sample_mutations(&value.nested_values(), sampler, path, cross_over);
                 }
             }
         }
@@ -1104,14 +1105,14 @@ impl<'p> Mutator<'p> {
             path.push(idx);
 
             // Check if this value's type matches the target field_type
-            if value.field_type == *field_type {
+            if value.field_type() == field_type {
                 sampler.add(FieldPath::new(path.clone()), 1);
             }
 
             // Recursively check nested values
-            match &value.field_type {
+            match &value.field_type() {
                 FieldType::Vec(_) | FieldType::Slice(_, _) | FieldType::Struct(_) => {
-                    self.sample_data_sources(&value.nested_values, field_type, sampler, path);
+                    self.sample_data_sources(&value.nested_values(), field_type, sampler, path);
                 }
                 _ => {} // Other types don't have nested values
             }
@@ -1215,12 +1216,12 @@ impl<'p> Mutator<'p> {
 
                 // Get the target type based on mutation type
                 let target_type = match &mutation.mutation {
-                    Mutation::Clone(None) => match &value.field_type {
+                    Mutation::Clone(None) => match &value.field_type() {
                         FieldType::Vec(inner_type) => &**inner_type,
                         FieldType::Slice(inner_type, _) => &**inner_type,
-                        _ => &value.field_type,
+                        _ => &value.field_type(),
                     },
-                    Mutation::Copy(None) => &value.field_type,
+                    Mutation::Copy(None) => &value.field_type(),
                     _ => unreachable!(),
                 };
 
@@ -1247,8 +1248,8 @@ impl<'p> Mutator<'p> {
             .expect("path to sampled data source has to exist");
 
         mutation.mutation = match mutation.mutation.clone() {
-            Mutation::Copy(None) => Mutation::Copy(Some(source_value.bytes.to_vec())),
-            Mutation::Clone(None) => Mutation::Clone(Some(source_value.bytes.to_vec())),
+            Mutation::Copy(None) => Mutation::Copy(Some(source_value.bytes().to_vec())),
+            Mutation::Clone(None) => Mutation::Clone(Some(source_value.bytes().to_vec())),
             _ => unreachable!(),
         };
 
@@ -1338,7 +1339,7 @@ mod tests {
                 mutation: Mutation::Mutate,
                 path: FieldPath { indices: ref idx },
                 additional_path: None
-            } if idx == &vec![0] && matches!(values[0].field_type, FieldType::Bool)
+            } if idx == &vec![0] && matches!(values[0].field_type(), FieldType::Bool)
         ));
 
         assert!(matches!(
@@ -1347,7 +1348,7 @@ mod tests {
                 mutation: Mutation::Mutate,
                 path: FieldPath { indices: ref idx },
                 additional_path: None
-            } if idx == &vec![1] && matches!(values[1].field_type, FieldType::Int(IntType::U8))
+            } if idx == &vec![1] && matches!(values[1].field_type(), FieldType::Int(IntType::U8))
         ));
 
         assert!(matches!(
@@ -1356,7 +1357,7 @@ mod tests {
                 mutation: Mutation::Mutate,
                 path: FieldPath { indices: ref idx },
                 additional_path: None
-            } if idx == &vec![2] && matches!(values[2].field_type, FieldType::Bytes(4))
+            } if idx == &vec![2] && matches!(values[2].field_type(), FieldType::Bytes(4))
         ));
 
         Ok(())

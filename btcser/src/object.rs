@@ -2,11 +2,11 @@ use crate::parser::{Descriptor, DescriptorParser, FieldPath, FieldType, IntType}
 
 #[derive(Debug)]
 pub struct SerializedValue<'a> {
-    pub bytes: &'a [u8],
-    pub field_type: FieldType,
-    pub nested_values: Vec<SerializedValue<'a>>,
-    pub is_constant: bool,
-    pub length_field_for: Vec<u64>,
+    bytes: &'a [u8],
+    field_type: FieldType,
+    nested_values: Vec<SerializedValue<'a>>,
+    is_constant: bool,
+    length_field_for: Vec<u64>,
 }
 
 impl<'a> SerializedValue<'a> {
@@ -32,6 +32,26 @@ impl<'a> SerializedValue<'a> {
             is_constant: false,
             length_field_for: Vec::new(),
         }
+    }
+
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
+    }
+
+    pub fn field_type(&self) -> &FieldType {
+        &self.field_type
+    }
+
+    pub fn nested_values(&self) -> &[SerializedValue<'a>] {
+        self.nested_values.as_slice()
+    }
+
+    pub fn is_constant(&self) -> bool {
+        self.is_constant
+    }
+
+    pub fn length_field_for(&self) -> &[u64] {
+        self.length_field_for.as_slice()
     }
 }
 
@@ -1044,16 +1064,19 @@ mod tests {
 
         // Check fixed-size bytes field
         assert_eq!(values[0].bytes, &[0xAA, 0xBB, 0xCC, 0xDD]);
-        assert!(matches!(values[0].field_type, FieldType::Bytes(4)));
+        assert!(matches!(values[0].field_type(), FieldType::Bytes(4)));
 
         // Check length field (u8)
         assert_eq!(values[1].bytes, &[0x02]);
-        assert!(matches!(values[1].field_type, FieldType::Int(IntType::U8)));
+        assert!(matches!(
+            values[1].field_type(),
+            FieldType::Int(IntType::U8)
+        ));
 
         // Check slice field
         assert_eq!(values[2].bytes, &[0x11, 0x22]);
-        assert!(matches!(values[2].field_type,
-            FieldType::Slice(_, length_field) if length_field == 1
+        assert!(matches!(values[2].field_type(),
+            FieldType::Slice(_, length_field) if *length_field == 1
         ));
         assert_eq!(values[2].nested_values.len(), 2);
         assert_eq!(values[2].nested_values[0].bytes, &[0x11]);
@@ -1245,14 +1268,17 @@ mod tests {
 
         // Check length field
         assert_eq!(values[0].bytes, &[0x02]);
-        assert!(matches!(values[0].field_type, FieldType::Int(IntType::U8)));
+        assert!(matches!(
+            values[0].field_type(),
+            FieldType::Int(IntType::U8)
+        ));
 
         // Check slice field
         assert_eq!(values[1].bytes, &data[1..5]); // Both Inner structs
-        assert!(matches!(values[1].field_type,
+        assert!(matches!(values[1].field_type(),
             FieldType::Slice(ref inner, length_field) if
                 matches!(**inner, FieldType::Struct(ref name) if name == "Inner") &&
-                length_field == 0
+                *length_field == 0
         ));
 
         // Check slice contents (the Inner structs)
@@ -1272,7 +1298,7 @@ mod tests {
 
         // Check trailing bytes
         assert_eq!(values[2].bytes, &[0xAA, 0xBB]);
-        assert!(matches!(values[2].field_type, FieldType::Bytes(2)));
+        assert!(matches!(values[2].field_type(), FieldType::Bytes(2)));
 
         // Test error case: truncated data
         let truncated_data = [
