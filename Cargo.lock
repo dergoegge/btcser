@@ -152,6 +152,17 @@ name = "btcser"
 version = "0.1.0"
 
 [[package]]
+name = "btcser-aflpp"
+version = "0.1.0"
+dependencies = [
+ "btcser",
+ "btcser-mutator",
+ "custom_mutator",
+ "libafl",
+ "libafl_bolts",
+]
+
+[[package]]
 name = "btcser-cmd"
 version = "0.1.0"
 dependencies = [
@@ -300,6 +311,11 @@ dependencies = [
  "quote",
  "syn",
 ]
+
+[[package]]
+name = "custom_mutator"
+version = "0.1.0"
+source = "git+https://github.com/AFLplusplus/AFLplusplus.git?branch=stable#fb52b8edf86e12628df834f4bb144916b18a503d"
 
 [[package]]
 name = "embedded-io"
