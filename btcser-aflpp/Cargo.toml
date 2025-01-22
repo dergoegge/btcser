@@ -1,0 +1,18 @@
+[package]
+name = "btcser-aflpp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+btcser = { path = "../btcser" }
+btcser-mutator = { path = "../btcser-mutator" }
+
+custom_mutator = { git = "https://github.com/AFLplusplus/AFLplusplus.git", branch = "stable" }
+
+libafl = { git = "https://github.com/AFLplusplus/LibAFL.git", tag = "0.14.0" }
+libafl_bolts = { git = "https://github.com/AFLplusplus/LibAFL.git", tag = "0.14.0" }
+
+
